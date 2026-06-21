@@ -1,10 +1,10 @@
-# 五分钟搭建 MCP 服务：NexusX vs 手写 FastMCP
+# GraphQL-based MCP：把数据库和业务 API 暴露给 AI Agent
 
-一个可运行的对比 demo：把 SQLModel 实体暴露给 AI agent（Claude / Cursor）的三种方式——手写 [FastMCP](https://github.com/jlowin/fastmcp)、NexusX 的 simple GraphQL-over-MCP 模式、NexusX 的 UseCase 模式（4 层渐进披露）。每条路径在本 repo 里都有完整可运行代码。
+一个可运行的对比 demo：把 SQLModel 实体暴露给 AI agent（Claude / Cursor）的**两种范式**——**flat-tool MCP**（以手写 [FastMCP](https://github.com/jlowin/fastmcp) 为参考实现）vs **GraphQL-based MCP**（以 [NexusX](https://github.com/allmonday/nexusx) 为参考实现之一）。每条路径在本 repo 里都有完整可运行代码。
 
-**FastMCP 的局限（一段话）**：它是个扎实的工具框架——pydantic 驱动的 `inputSchema` / `outputSchema` 生成做得确实好。但当 agent 的任务是查询结构化数据时，扁平工具模型暴露出结构性局限：工具数量随实体线性增长、agent 启动要加载全部工具描述（schema token 占用大）、`tools/call` 没有字段投影导致 over-fetch、每个嵌套或组合查询都得单独写一个工具。这些不是实现 bug——是"工具即函数"撞上"数据即图"的必然结果。
+**Flat-tool MCP 的局限（一段话）**：FastMCP 是个扎实的工具框架——pydantic 驱动的 `inputSchema` / `outputSchema` 生成做得确实好。但当 agent 的任务是查询结构化数据时，"工具即函数" 的模型暴露出结构性局限：工具数量随实体线性增长、agent 启动要加载全部工具描述（schema token 占用大）、`tools/call` 没有字段投影导致 over-fetch、每个嵌套或组合查询都得单独写一个工具。这些不是实现 bug——是"工具即函数"撞上"数据即图"的必然结果。
 
-**NexusX 干了什么（一段话）**：把同一份 SQLModel 实体当作 GraphQL schema 的单一真相源，再用 MCP 包住。一行 `create_simple_mcp_server`（业务方法用 `create_use_case_graphql_mcp_server`），agent 就继承了 GraphQL 十年沉淀的查询能力——字段选择、DataLoader 批量、多实体组合查询、4 层渐进式披露。文章也讲了*为什么这样设计有效*（AI agent 是又一个前端客户端）和*NexusX 怎么避免 GraphQL "太自由、找不到最佳实践" 的陷阱*（每条代码路径强制一种 schema 风格——B1 严格面向 model，B2 严格面向 business）。
+**GraphQL-based MCP（一段话）**：把数据或业务方法建模成 GraphQL schema，再用 MCP 把这个 schema 暴露给 agent。Agent 不再调 N 个工具，而是写一个 GraphQL 查询——字段选择、DataLoader 批量、多实体组合、4 层渐进披露都是 GraphQL 红利。NexusX 是这种范式的一种 opinionated 实现，其他选项见 [Other implementations](#其他-graphql-based-mcp-实现) 一节。文章也讲了*为什么这样设计有效*（AI agent 是又一个前端客户端）和*怎么避免 GraphQL "太自由、找不到最佳实践" 的陷阱*（每条代码路径强制一种 schema 风格——B1 严格面向 model，B2 严格面向 business）。
 
 **English**: [README.md](./README.md)
 
@@ -367,7 +367,9 @@ router = create_use_case_router(
 
 ## 量化对比
 
-| 维度 | 手写 FastMCP | NexusX simple | NexusX UseCase |
+*列名是范式，不是产品。NexusX 是 GraphQL-based MCP 两列的参考实现，其他实现见[下一节](#其他-graphql-based-mcp-实现)。*
+
+| 维度 | Flat-tool MCP (FastMCP) | GraphQL-based MCP (simple) | GraphQL-based MCP (UseCase) |
 |---|---|---|---|
 | inputSchema / outputSchema 自动生成 | ✅（从 pydantic 模型） | ✅（从 SQLModel 元数据 → GraphQL SDL） | ✅（从 service 方法签名 → GraphQL SDL） |
 | 每实体要写的样板 | N 个工具函数 + N 个 pydantic 模型 | 0 行（一行 `create_simple_mcp_server`） | 0 行（一行 `create_use_case_graphql_mcp_server`） |
@@ -381,6 +383,19 @@ router = create_use_case_router(
 | Tool 安全标注（annotations） | ✅ `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 帮 agent 决策调用是否安全 | ❌ GraphQL schema 无等价机制 | ❌ 同左 |
 | MCP Resources（URI 寻址资源） | ✅ `@mcp.resource("config://...")` 暴露配置 / 文件 / 文档 | ❌ 仅 tools | ❌ 仅 tools |
 | MCP Prompts（预定义提示模板） | ✅ `@mcp.prompt` 给 agent 提供结构化 prompt | ❌ 仅 tools | ❌ 仅 tools |
+
+---
+
+## 其他 GraphQL-based MCP 实现
+
+NexusX 不是这种范式的唯一实现。核心思想——*让 agent 用 GraphQL 查询数据，而不是调 N 个扁平工具*——可以用多种技术栈落地，区别在自由度、样板量、生态位：
+
+- **Strawberry + FastMCP**（最接近的 Python 替代）：Strawberry 提供 Python-native、类型驱动的 GraphQL schema，把 `schema.execute_async` 包到 FastMCP 的 `graphql_query` / `graphql_mutation` 工具。比 NexusX 更自由（schema 完全自定义，支持 Federation / Subscription），但失去 opinionated 风格约束，DataLoader 要自己写。
+- **Apollo Server + MCP bridge**（Node 生态）：Apollo 暴露 GraphQL HTTP endpoint，写一个轻量 MCP server（Python 或 Node）转发查询。适合已有 Apollo 投资的 Node 项目，但架构多一层（MCP → HTTP → Apollo → DB），延迟更高，部署更复杂。
+- **Ariadne + FastMCP**（schema-first）：先写 SDL 文件作为契约，再绑定 resolver。适合前后端契约协作严格的团队，但每个字段都要 resolver，样板多——不能像 NexusX 那样从 ORM 元数据自动生成。
+- **裸 `graphql-core` + FastMCP**（底层）：用 graphql-core 程序化构造 schema，再用 FastMCP 包装。最灵活但样板最多，适合实验或框架开发。
+
+**范式 vs 实现**：GraphQL-based MCP 的核心洞察是结构性的——agent 应该查询数据，而不是为每种数据形状调一个工具。NexusX 实现了 opinionated 变体（SQLModel 单一真相源 + 两条强制风格路径），其他实现保留更多自由度但失去防止 schema 漂移的约束。
 
 ---
 
