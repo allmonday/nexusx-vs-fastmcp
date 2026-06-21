@@ -380,6 +380,24 @@ router = create_use_case_router(
 
 ---
 
+## 设计哲学：把 AI agent 当成又一个前端
+
+回头看量化对比表里 FastMCP 的几个痛点——over-fetch、没法字段选择、没法组合查询、启动时 schema token 占用随工具数线性增长——前端工程师会很眼熟。这正是 2015 年 REST + BFF 时代天天吵架的事。GraphQL 当年就是为了解决这些而生的：字段选择、嵌套查询、强类型契约、按需组合。
+
+agent 现在撞上同一堵墙，只是换了个名字叫 "tools/list 的 token 预算"。
+
+NexusX 做的事不是"发明一个 MCP 框架"，而是**把 SQLModel 实体当作 GraphQL schema 的单一真相源，让 agent 通过 GraphQL-over-MCP 拿到所有能力**。一行 `create_simple_mcp_server` 背后真正起作用的是这套继承关系——agent 拿到的不是"为 AI 设计的新协议"，而是"为前端设计、已经被亿级生产流量验证过的协议"。
+
+这个抽象的价值有三层：
+
+1. **Agent 的能力上限被抬高了**——组合查询、字段投影、嵌套关系一次往返，这些是 GraphQL 的红利，agent 现在白捡。
+2. **存量 SQLModel 项目几乎免费接入**——本来就有 entity，加几个 `@query` 装饰器就有 MCP。FastMCP 路径要重写一遍工具层。
+3. **`UseCaseService` 让 REST 跟着 MCP 一起免费**——业务逻辑写一遍，agent 和前端两面交付。
+
+但前提是：**数据有结构、关系可遍历**。如果 agent 要做的不是查数据库——而是发邮件、改图片、调外部 API——GraphQL 的抽象反而是阻碍，FastMCP 那种"工具即函数"的模型更合适。下一节展开边界。
+
+---
+
 ## 诚实的边界
 
 NexusX 不是所有场景都更合适。
