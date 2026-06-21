@@ -72,63 +72,100 @@ class Post(SQLModel, table=True):
 
 > 完整代码：[`fastmcp_handwritten.py`](./fastmcp_handwritten.py)
 
-FastMCP 是把 Python 函数变成 MCP 工具的事实标准。每个工具一个 `@mcp.tool` 装饰器，FastMCP 从类型注解和 docstring 推断 schema。
+FastMCP 是把 Python 函数变成 MCP 工具的事实标准。每个工具一个 `@mcp.tool` 装饰器。
+
+公平起见，这里用 FastMCP 的**最佳实践**：参数和返回值用 pydantic `BaseModel`。FastMCP 会自动从类型注解生成 `inputSchema` / `outputSchema`（含 `Field(description=...)` 等元数据）——这一块 FastMCP 已经做得很好，不是 NexusX 的差异点。
 
 ```python
 from fastmcp import FastMCP
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
+
+
+# ─── pydantic I/O 模型 ───
+class UserCreate(BaseModel):
+    """Payload to create a user."""
+    name: str = Field(..., description="User's display name")
+    email: str = Field(..., description="Reachable email")
+
+
+class UserOut(BaseModel):
+    """A user record."""
+    id: int
+    name: str
+    email: str
+
+
+class PostWithAuthor(BaseModel):
+    """A post with nested author info.
+
+    This shape exists *only* because the flat-tool model can't express nested
+    field selection. Every new nesting needs another tool + another Pydantic model.
+    """
+    id: int
+    title: str
+    author: UserOut
+
 
 mcp = FastMCP("Blog")
 
 
 @mcp.tool
-async def get_user(user_id: int) -> dict:
+async def get_user(user_id: int) -> UserOut | None:
     """Get a user by ID."""
     async with session() as s:
         user = await s.get(User, user_id)
         if not user:
-            return {"error": "not found"}
-        return {"id": user.id, "name": user.name, "email": user.email}
+            return None
+        return UserOut(id=user.id, name=user.name, email=user.email)
 
 
 @mcp.tool
-async def list_users(limit: int = 20) -> list[dict]:
+async def list_users(limit: int = 20) -> list[UserOut]:
     """List users."""
     async with session() as s:
         rows = (await s.exec(select(User).limit(limit))).all()
-        return [{"id": u.id, "name": u.name, "email": u.email} for u in rows]
-
-
-# ... create_user、get_post、list_posts、create_post 同构 ...
+        return [UserOut(id=u.id, name=u.name, email=u.email) for u in rows]
 
 
 @mcp.tool
-async def list_posts_with_author(limit: int = 20) -> list[dict]:
+async def create_user(payload: UserCreate) -> UserOut:
+    """Create a user from a pydantic payload."""
+    # ... insert + return UserOut
+
+
+# get_post / list_posts / create_post 同构 ...
+
+
+@mcp.tool
+async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
     """List posts with their author (avoids N+1 via selectinload).
 
-    This tool exists *only* because the flat-tool model can't express
-    nested field selection. Every new shape needs another tool.
+    Every new nesting shape needs another tool + another Pydantic model.
     """
     async with session() as s:
         stmt = select(Post).options(selectinload(Post.author)).limit(limit)
         rows = (await s.exec(stmt)).all()
         return [
-            {"id": p.id, "title": p.title,
-             "author": {"id": p.author.id, "name": p.author.name}}
+            PostWithAuthor(
+                id=p.id,
+                title=p.title,
+                author=UserOut(id=p.author.id, name=p.author.name, email=p.author.email),
+            )
             for p in rows
         ]
 ```
 
-**实际产出**：7 个工具（`get_user`、`list_users`、`create_user`、`get_post`、`list_posts`、`create_post`、`list_posts_with_author`）。
+**实际产出**：7 个工具（`get_user`、`list_users`、`create_user`、`get_post`、`list_posts`、`create_post`、`list_posts_with_author`）。FastMCP 给每个工具生成 `inputSchema` + `outputSchema`，docstring 成为工具描述——这一部分免费。
 
-### 痛点
+### 仍然存在的痛点
 
-1. **每个实体 N 倍工作量**：User 3 个工具、Post 3 个工具……线性增长。
-2. **嵌套数据要单独设计工具**：想要"带 author 的 post 列表"，必须手写 `list_posts_with_author` 并显式 `selectinload`。再多一层关系（`posts { author { comments } }`）就要再加一个工具。
-3. **工具墙**：Agent 一启动就读到全部 7 个工具的 schema 描述——即便这次任务只用得上 `list_posts`。
+1. **每个实体 N 倍工作量**：User 3 个工具、Post 3 个工具……工具数量随实体线性增长。schema 自动化省掉了字段定义，但工具本身仍然要逐个手写。
+2. **嵌套数据要单独设计工具**：想要"带 author 的 post 列表"，必须手写 `list_posts_with_author` + 一个 `PostWithAuthor` 模型 + 显式 `selectinload`。再多一层关系（`posts { author { comments } }`）就要再加一个工具和一个模型。
+3. **工具墙**：Agent 一启动就读到全部 7 个工具的 schema 描述——即便这次任务只用得上 `list_posts`。schema 自动化反而让每个工具的描述变得更详细，token 占用更大。
 4. **没有组合查询能力**：Agent 想"同时拿 User 列表和 Post 列表"必须两次往返。
-5. **REST 同源要重写**：同一个业务逻辑想给前端用，得再写一份 FastAPI 路由。
+5. **REST 同源要重写**：同一个业务逻辑想给前端用，得再写一份 FastAPI 路由（虽然 pydantic 模型可以复用）。
 
 ---
 
@@ -191,9 +228,8 @@ mcp = create_simple_mcp_server(
 | 路径 A 你要操心的事 | 路径 B1 你不用操心的事 |
 |---|---|
 | `@mcp.tool` 装饰器 × N | 自动 |
-| 每个工具的 input schema | 从类型注解自动推 |
-| 每个工具的返回序列化 | GraphQL SDL 自动 |
-| `list_posts_with_author` 这种嵌套工具 | 直接 GraphQL 嵌套查询 |
+| 每个实体一份 pydantic I/O 模型（schema 自动，但模型本身要写） | GraphQL SDL 从 SQLModel 元数据自动生成 |
+| `list_posts_with_author` 这种嵌套工具 + 嵌套 pydantic 模型 | 直接 GraphQL 嵌套查询 |
 | `selectinload` 防止 N+1 | DataLoader 自动批量 |
 | 工具数量随实体爆炸 | 3 个工具固定不变 |
 
@@ -328,12 +364,13 @@ router = create_use_case_router(
 
 | 维度 | 手写 FastMCP | NexusX simple | NexusX UseCase |
 |---|---|---|---|
-| 实体 → MCP 暴露的额外代码 | ~30 行 × 实体数 | 0 行（一行 `create_simple_mcp_server`） | 0 行（一行 `create_use_case_graphql_mcp_server`） |
-| 嵌套关系查询 | 手写工具 + `selectinload` | GraphQL 字段嵌套，DataLoader 自动 | 业务方法层组合 |
-| 工具数量增长 | 线性（每实体 +N） | 常数（固定 3 个） | 常数（固定 4 个） |
-| Agent 启动时 schema 加载 | 全部工具描述 | 1 个 `get_schema` 工具，按需下钻 | 3 层下钻（apps → schema → method） |
+| inputSchema / outputSchema 自动生成 | ✅（从 pydantic 模型） | ✅（从 SQLModel 元数据 → GraphQL SDL） | ✅（从 service 方法签名 → GraphQL SDL） |
+| 每实体要写的样板 | N 个工具函数 + N 个 pydantic 模型 | 0 行（一行 `create_simple_mcp_server`） | 0 行（一行 `create_use_case_graphql_mcp_server`） |
+| 嵌套关系查询 | 手写工具 + 嵌套模型 + `selectinload` | GraphQL 字段嵌套，DataLoader 自动 | 业务方法层组合 |
+| 工具数量增长 | 线性（每实体 +N 工具） | 常数（固定 3 个） | 常数（固定 4 个） |
+| Agent 启动时 schema 加载 | 全部工具描述（schema 越细，token 越多） | 1 个 `get_schema` 工具，按需下钻 | 3 层下钻（apps → schema → method） |
 | 组合查询（多实体一次往返） | 不支持 | 原生 GraphQL | 原生 GraphQL |
-| REST API 同源 | 另写 FastAPI | 另写 FastAPI | `UseCaseService` 直接挂 |
+| REST API 同源 | pydantic 模型可复用，但端点要重写 | 另写 FastAPI | `UseCaseService` 直接挂 |
 | N+1 防护 | 手动 `selectinload` | DataLoader 自动批量 | DataLoader 自动批量 |
 
 ---
