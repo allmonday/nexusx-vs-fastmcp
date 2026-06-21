@@ -1,54 +1,59 @@
-# 五分钟搭建 MCP 服务：NexusX vs 手写 FastMCP
+# Five Minutes to an MCP Service: NexusX vs Hand-Written FastMCP
 
-> 面向已经用 SQLModel 写过实物的开发者。目标：把数据库暴露给 Claude / Cursor 等 AI Agent。
+> For developers who already have SQLModel entities lying around. Goal: expose
+> the database to AI agents like Claude / Cursor.
 >
-> 本 repo 是可运行的对比 demo——三条路径的代码都在，每个 server 都能独立启动。
+> This repo is a runnable side-by-side demo — all three paths have real code,
+> each server starts independently.
 
-**English**: [README.en.md](./README.en.md)
+**中文版**: [README.zh.md](./README.zh.md)
 
-## 快速运行
+## Quick start
 
 ```bash
 git clone https://github.com/allmonday/nexusx-vs-fastmcp.git
 cd nexusx-vs-fastmcp
 
-uv sync                              # 或：pip install -e .
+uv sync                              # or: pip install -e .
 
-python init_db.py                    # 一次性建表 + 种子数据（三个 db）
+python init_db.py                    # one-shot: create schema + seed (all three DBs)
 
-# 任选一条路径启动：
-python fastmcp_handwritten.py        # 路径 A：手写 FastMCP（stdio）
-python nexusx_simple.py              # 路径 B1：NexusX simple（stdio）
-python nexusx_usecase.py             # 路径 B2：NexusX UseCase（stdio）
+# Pick a path and start:
+python fastmcp_handwritten.py        # Path A: hand-written FastMCP (stdio)
+python nexusx_simple.py              # Path B1: NexusX simple (stdio)
+python nexusx_usecase.py             # Path B2: NexusX UseCase (stdio)
 
-# 加 --http 切换到 HTTP 模式，端口 9001 / 9002 / 9003：
+# Append --http to switch to HTTP mode on ports 9001 / 9002 / 9003:
 python nexusx_usecase.py --http
 ```
 
-stdio 模式接入 Claude Desktop / Cursor；HTTP 模式可用 `curl` 或浏览器端 MCP 客户端调试。
+stdio mode plugs into Claude Desktop / Cursor. HTTP mode is handy for `curl`
+probes or browser-based MCP clients during development.
 
 ---
 
 ## TL;DR
 
-同一个需求——"让 AI Agent 能查询和创建 User 与 Post"——三条路径：
+Same requirement — "let an AI agent query and create Users and Posts" — three paths:
 
-| | 手写 FastMCP | NexusX simple | NexusX UseCase |
+| | Hand-written FastMCP | NexusX simple | NexusX UseCase |
 |---|---|---|---|
-| 实际产出 | 7 个扁平工具（每实体 3 个 + 1 个关系补偿工具） | 1 个 GraphQL endpoint + 3 个 MCP 工具 | 4 层渐进披露 MCP 工具 |
-| 嵌套查询（`posts { author { name } }`） | 必须单独写一个 `list_posts_with_author` 工具 | 直接 GraphQL 嵌套，DataLoader 自动防 N+1 | 业务方法层组合，DTO 决定形状 |
-| Agent 端 token 占用 | 一上来读全部 7 个工具描述 | 3 个工具，schema 按需下钻 | 4 个工具，三层下钻 |
-| REST API 同源 | 再写一份 FastAPI 路由 | 同样需要再写 | 同一个 `UseCaseService` 直接挂 FastAPI |
+| What you produce | 7 flat tools (3 per entity + 1 relationship-compensation tool) | 1 GraphQL endpoint + 3 MCP tools | 4-layer progressive-disclosure MCP tools |
+| Nested query (`posts { author { name } }`) | Must write a separate `list_posts_with_author` tool | Direct GraphQL nesting, DataLoader prevents N+1 | Business-method composition, DTOs decide shape |
+| Agent-side token cost | Reads all 7 tool descriptions upfront | 3 tools, schema drilled into on demand | 4 tools, three layers of drill-down |
+| REST API co-existence | Write a separate set of FastAPI routes | Same — write it again | The same `UseCaseService` mounts to FastAPI |
 
-下面把三条路径完整写一遍。所有代码片段都对应 repo 里的真实文件。
+The three paths are written out in full below. Every code snippet maps to a real file in this repo.
 
 ---
 
-## 共同的起点
+## Shared starting point
 
-三条路径共用同一份实体定义（`User` + `Post` 带一对多关系）和同样的种子数据。差异只在"如何变成 MCP 服务"。
+All three paths share the same entity definitions (`User` + `Post` in a one-to-many
+relationship) and the same seed data. The only difference is *how* they become an
+MCP service.
 
-实体字段：
+Entity fields:
 
 ```python
 class User(SQLModel, table=True):
@@ -66,17 +71,21 @@ class Post(SQLModel, table=True):
     author: Optional["User"] = Relationship(back_populates="posts")
 ```
 
-种子数据：2 个 user（Alice、Bob）、3 个 post。
+Seed data: 2 users (Alice, Bob) and 3 posts.
 
 ---
 
-## 路径 A：手写 FastMCP（10+ 分钟）
+## Path A: hand-written FastMCP (10+ minutes)
 
-> 完整代码：[`fastmcp_handwritten.py`](./fastmcp_handwritten.py)
+> Full code: [`fastmcp_handwritten.py`](./fastmcp_handwritten.py)
 
-FastMCP 是把 Python 函数变成 MCP 工具的事实标准。每个工具一个 `@mcp.tool` 装饰器。
+FastMCP is the de facto standard for turning Python functions into MCP tools. One
+`@mcp.tool` decorator per tool.
 
-公平起见，这里用 FastMCP 的**最佳实践**：参数和返回值用 pydantic `BaseModel`。FastMCP 会自动从类型注解生成 `inputSchema` / `outputSchema`（含 `Field(description=...)` 等元数据）——这一块 FastMCP 已经做得很好，不是 NexusX 的差异点。
+For fairness, this path uses FastMCP's **best practice**: arguments and return
+values are pydantic `BaseModel`s. FastMCP auto-generates `inputSchema` /
+`outputSchema` from the type annotations (including `Field(description=...)`
+metadata). FastMCP is genuinely good at this — it's not where NexusX differs.
 
 ```python
 from fastmcp import FastMCP
@@ -85,7 +94,7 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
 
-# ─── pydantic I/O 模型 ───
+# ─── pydantic I/O models ───
 class UserCreate(BaseModel):
     """Payload to create a user."""
     name: str = Field(..., description="User's display name")
@@ -137,7 +146,7 @@ async def create_user(payload: UserCreate) -> UserOut:
     # ... insert + return UserOut
 
 
-# get_post / list_posts / create_post 同构 ...
+# get_post / list_posts / create_post follow the same shape ...
 
 
 @mcp.tool
@@ -159,24 +168,43 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
         ]
 ```
 
-**实际产出**：7 个工具（`get_user`、`list_users`、`create_user`、`get_post`、`list_posts`、`create_post`、`list_posts_with_author`）。FastMCP 给每个工具生成 `inputSchema` + `outputSchema`，docstring 成为工具描述——这一部分免费。
+**What you actually produce**: 7 tools (`get_user`, `list_users`, `create_user`,
+`get_post`, `list_posts`, `create_post`, `list_posts_with_author`). FastMCP
+generates `inputSchema` + `outputSchema` for each; the docstring becomes the tool
+description. That part is free.
 
-### 仍然存在的痛点
+### Pain points that remain
 
-1. **每个实体 N 倍工作量**：User 3 个工具、Post 3 个工具……工具数量随实体线性增长。schema 自动化省掉了字段定义，但工具本身仍然要逐个手写。
-2. **嵌套数据要单独设计工具**：想要"带 author 的 post 列表"，必须手写 `list_posts_with_author` + 一个 `PostWithAuthor` 模型 + 显式 `selectinload`。再多一层关系（`posts { author { comments } }`）就要再加一个工具和一个模型。
-3. **工具墙**：Agent 启动时得拿到全部 7 个工具的 schema 才能用——即便这次任务只用得上 `list_posts`。schema 自动化反而让每个工具的描述变得更详细，token 占用更大。FastMCP 支持 `tools/list` 分页（cursor）可以分批发现，但只是省初次发现的延迟，agent 真用工具时仍然要加载完整 schema，token 总量没省。
-4. **Over-fetch / 没法按需选字段**：MCP 协议的 `tools/call` 没有"只要某些字段"的参数。Agent 调 `get_user` 必须接受整个 `UserOut`（id + name + email 全返回），就算它只关心 `name`。模型字段越多浪费越严重——pydantic 模型字段一多，单次响应 token 就线性涨。
-5. **没有组合查询能力**：Agent 想"同时拿 User 列表和 Post 列表"必须两次往返。
-6. **REST 同源要重写**：同一个业务逻辑想给前端用，得再写一份 FastAPI 路由（虽然 pydantic 模型可以复用）。
+1. **N× work per entity**: 3 tools for User, 3 for Post... tool count grows
+   linearly with entity count. Schema automation removed the field definitions
+   but you still hand-write each tool.
+2. **Nested data needs its own tool**: "posts with their author" requires a
+   hand-written `list_posts_with_author` + a `PostWithAuthor` model + an explicit
+   `selectinload`. One more level of nesting (`posts { author { comments } }`)
+   means another tool and another model.
+3. **Tool wall**: The agent has to load all 7 tool schemas before it can do
+   anything — even if this task only needs `list_posts`. Schema automation makes
+   each description *more* detailed, so token cost goes up, not down. FastMCP
+   supports `tools/list` pagination (cursor-based), which helps discovery latency
+   but doesn't reduce total schema tokens when the agent actually invokes a tool.
+4. **Over-fetch / no field projection**: MCP's `tools/call` has no
+   "just-these-fields" parameter. An agent calling `get_user` must accept the
+   entire `UserOut` (id + name + email returned in full), even if it only cares
+   about `name`. The more fields on the pydantic model, the worse the waste —
+   single-call response tokens scale linearly with model width.
+5. **No composed queries**: "Give me the user list AND the post list" means two
+   round trips.
+6. **REST isn't free**: The same business logic exposed to a web frontend needs a
+   separate set of FastAPI routes (pydantic models can be reused, endpoints can't).
 
 ---
 
-## 路径 B1：NexusX Simple（30 秒）
+## Path B1: NexusX Simple (30 seconds)
 
-> 完整代码：[`nexusx_simple.py`](./nexusx_simple.py)
+> Full code: [`nexusx_simple.py`](./nexusx_simple.py)
 
-NexusX 的逻辑：**实体的 `@query` / `@mutation` 方法就是 GraphQL 字段，MCP 自动包住整个 GraphQL endpoint**。
+NexusX's premise: **`@query` / `@mutation` methods on the entity *are* GraphQL
+fields; MCP wraps the entire GraphQL endpoint automatically.**
 
 ```python
 from nexusx import mutation, query
@@ -212,10 +240,10 @@ class User(SQLModel, table=True):
             return user
 
 
-# Post 类同构：get_posts / get_post / create_post
+# Post class is parallel: get_posts / get_post / create_post
 
 
-# ─── 一行变成 MCP 服务 ───
+# ─── one line to become an MCP service ───
 mcp = create_simple_mcp_server(
     base=SQLModel,
     name="Blog (NexusX Simple)",
@@ -224,23 +252,24 @@ mcp = create_simple_mcp_server(
 )
 ```
 
-**业务代码量跟路径 A 几乎一样**——你本来就得写"怎么查 user、怎么创建 post"。NexusX 没有魔法消除这些。
+**Business code is roughly the same as Path A** — you'd be writing "how to query
+users, how to create posts" anyway. NexusX doesn't magically remove that.
 
-差异在最后一行之前：
+The difference is what comes *before* the last line:
 
-| 路径 A 你要操心的事 | 路径 B1 你不用操心的事 |
+| What Path A makes you handle | What Path B1 doesn't |
 |---|---|
-| `@mcp.tool` 装饰器 × N | 自动 |
-| 每个实体一份 pydantic I/O 模型（schema 自动，但模型本身要写） | GraphQL SDL 从 SQLModel 元数据自动生成 |
-| `list_posts_with_author` 这种嵌套工具 + 嵌套 pydantic 模型 | 直接 GraphQL 嵌套查询 |
-| `selectinload` 防止 N+1 | DataLoader 自动批量 |
-| 工具数量随实体爆炸 | 3 个工具固定不变 |
+| `@mcp.tool` decorator × N | automatic |
+| One pydantic I/O model per entity (schema is free, the model isn't) | GraphQL SDL generated from SQLModel metadata |
+| `list_posts_with_author` style nested tool + nested pydantic model | Plain GraphQL nested query |
+| `selectinload` to avoid N+1 | DataLoader batches automatically |
+| Tool count explosion as entities grow | Fixed at 3 tools |
 
-### Agent 端看到的工具差异
+### What the agent sees
 
-路径 A 的 Agent 启动时读到 7 个工具描述。
+Path A: the agent reads 7 tool descriptions on startup.
 
-路径 B1 的 Agent 启动时读到：
+Path B1: the agent reads:
 
 ```
 - get_schema()           → { sdl }
@@ -248,7 +277,8 @@ mcp = create_simple_mcp_server(
 - graphql_mutation(...)  → { data }
 ```
 
-然后 Agent 按需调 `get_schema` 了解能力，再发一次 GraphQL 查询。组合查询、嵌套字段一次往返搞定：
+The agent calls `get_schema` on demand to learn capabilities, then issues one
+GraphQL query. Composed queries and nested fields resolve in a single round trip:
 
 ```graphql
 {
@@ -258,21 +288,26 @@ mcp = create_simple_mcp_server(
     posts {
       id
       title
-      author { name }   /* 跨关系回引，DataLoader 自动批量 */
+      author { name }   /* cross-relation back-reference, DataLoader batches */
     }
   }
 }
 ```
 
-路径 A 要做同样的事，Agent 得调 3 次工具（`get_user` → `list_posts_with_author` → 拼装），或者你预先写好一个 `get_user_with_posts_and_author_comments` 工具——然后下一个稍微不同的查询需求又得再加一个工具。
+To do the same in Path A, the agent makes 3 tool calls (`get_user` →
+`list_posts_with_author` → manual assembly), or you pre-write a
+`get_user_with_posts_and_author_comments` tool — and then the next slightly
+different query needs yet another tool.
 
 ---
 
-## 路径 B2：NexusX UseCase + 4 层渐进披露（再花 2 分钟）
+## Path B2: NexusX UseCase + 4-layer progressive disclosure (2 more minutes)
 
-> 完整代码：[`nexusx_usecase.py`](./nexusx_usecase.py)
+> Full code: [`nexusx_usecase.py`](./nexusx_usecase.py)
 
-如果你要暴露的不是裸 CRUD，而是**业务方法**（比如 `list_users_with_post_counts` 这种带派生字段的），NexusX 的 UseCase 模式更有优势。
+When you want to expose **business methods** (not raw CRUD) — things like
+`list_users_with_post_counts` that carry derived fields — the UseCase pattern
+shines.
 
 ```python
 from pydantic import BaseModel
@@ -332,23 +367,28 @@ mcp = create_use_case_graphql_mcp_server(
 )
 ```
 
-此时 MCP 提供 4 层工具：
+The MCP service now exposes 4 layered tools:
 
-| 工具 | 用途 | 响应信封 |
+| Tool | Purpose | Response envelope |
 |---|---|---|
-| `list_apps()` | 发现可用应用 | 极小 |
-| `describe_compose_schema(app)` | 列出 service + 方法名（不含参数） | 小 |
-| `describe_compose_method(app, svc, method)` | 看具体方法的参数 + 返回类型 + SDL 片段 | 中 |
-| `compose_query(app, query)` | 执行 GraphQL 字符串 | 按查询大小 |
+| `list_apps()` | Discover available apps | tiny |
+| `describe_compose_schema(app)` | List service + method names (no params) | small |
+| `describe_compose_method(app, svc, method)` | Params + return type + SDL fragment for one method | medium |
+| `compose_query(app, query)` | Execute a GraphQL string | sized by the query |
 
-### 这是 NexusX 相对 FastMCP 最大的结构差异
+### This is the biggest structural difference vs FastMCP
 
-- **FastMCP 是扁平工具墙**——Agent 启动就把所有工具描述塞进上下文
-- **NexusX 是渐进式发现树**——Agent 先看 `list_apps` 决定要不要继续，再 `describe_compose_schema` 看方法名，最后 `describe_compose_method` 拿到精确 schema
+- **FastMCP is a flat tool wall** — the agent loads every tool description into
+  context at startup.
+- **NexusX is a progressive disclosure tree** — the agent checks `list_apps` to
+  decide whether to continue, then `describe_compose_schema` for method names,
+  then `describe_compose_method` for the exact schema it needs.
 
-实体越多、业务方法越多，这个差异越明显。FastMCP 项目里 30+ 工具是常态，Agent 上下文被工具描述吃掉一大块；NexusX 始终是 4 个工具。
+The gap widens as entities and business methods multiply. 30+ tools is normal in
+a FastMCP project; the agent's context gets eaten by tool descriptions. NexusX
+stays at 4 tools regardless.
 
-而且**同一个 `UserService` 子类还能直接挂到 FastAPI**：
+And **the same `UserService` subclass mounts directly onto FastAPI**:
 
 ```python
 from nexusx import create_use_case_router
@@ -356,121 +396,174 @@ from nexusx import create_use_case_router
 router = create_use_case_router(
     apps=[UseCaseAppConfig(name="blog", services=[UserService])],
 )
-# 挂到 FastAPI app 即可，OpenAPI 文档自动生成
+# Attach to a FastAPI app — OpenAPI docs come for free.
 ```
 
-业务逻辑写一遍，MCP 和 REST 两面交付。FastMCP 路径要做同样的事，得手动把每个工具函数重新包成 FastAPI 端点。
+Write the business logic once; deliver to both MCP and REST. Path A would need to
+re-wrap every tool function as a FastAPI endpoint by hand.
 
 ---
 
-## 量化对比
+## Quantitative comparison
 
-| 维度 | 手写 FastMCP | NexusX simple | NexusX UseCase |
+| Dimension | Hand-written FastMCP | NexusX simple | NexusX UseCase |
 |---|---|---|---|
-| inputSchema / outputSchema 自动生成 | ✅（从 pydantic 模型） | ✅（从 SQLModel 元数据 → GraphQL SDL） | ✅（从 service 方法签名 → GraphQL SDL） |
-| 每实体要写的样板 | N 个工具函数 + N 个 pydantic 模型 | 0 行（一行 `create_simple_mcp_server`） | 0 行（一行 `create_use_case_graphql_mcp_server`） |
-| 嵌套关系查询 | 手写工具 + 嵌套模型 + `selectinload` | GraphQL 字段嵌套，DataLoader 自动 | 业务方法层组合 |
-| 工具数量增长 | 线性（每实体 +N 工具） | 常数（固定 3 个） | 常数（固定 4 个） |
-| Agent 启动时 schema 加载 | 全部工具描述（schema 越细，token 越多） | 1 个 `get_schema` 工具，按需下钻 | 3 层下钻（apps → schema → method） |
-| 返回字段过滤（防 over-fetch） | ❌ 工具返回整个 pydantic 模型，agent 无法按需选字段 | ✅ GraphQL 字段选择 | ✅ GraphQL 字段选择 |
-| 组合查询（多实体一次往返） | 不支持 | 原生 GraphQL | 原生 GraphQL |
-| REST API 同源 | pydantic 模型可复用，但端点要重写 | 另写 FastAPI | `UseCaseService` 直接挂 |
-| N+1 防护 | 手动 `selectinload` | DataLoader 自动批量 | DataLoader 自动批量 |
-| Tool 安全标注（annotations） | ✅ `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 帮 agent 决策调用是否安全 | ❌ GraphQL schema 无等价机制 | ❌ 同左 |
-| MCP Resources（URI 寻址资源） | ✅ `@mcp.resource("config://...")` 暴露配置 / 文件 / 文档 | ❌ 仅 tools | ❌ 仅 tools |
-| MCP Prompts（预定义提示模板） | ✅ `@mcp.prompt` 给 agent 提供结构化 prompt | ❌ 仅 tools | ❌ 仅 tools |
+| inputSchema / outputSchema auto-generation | ✅ (from pydantic models) | ✅ (from SQLModel metadata → GraphQL SDL) | ✅ (from service method signatures → GraphQL SDL) |
+| Boilerplate per entity | N tool functions + N pydantic models | 0 lines (one `create_simple_mcp_server`) | 0 lines (one `create_use_case_graphql_mcp_server`) |
+| Nested relationship queries | Hand-written tool + nested model + `selectinload` | GraphQL field nesting, DataLoader auto | Business-method composition |
+| Tool-count growth | Linear (+N per entity) | Constant (fixed 3) | Constant (fixed 4) |
+| Schema loading at agent startup | All tool descriptions (more detail = more tokens) | 1 `get_schema` tool, drill-down on demand | 3-layer drill-down (apps → schema → method) |
+| Return-field projection (anti over-fetch) | ❌ tool returns the full pydantic model; agent can't pick fields | ✅ GraphQL field selection | ✅ GraphQL field selection |
+| Composed queries (multi-entity, one round trip) | Not supported | Native GraphQL | Native GraphQL |
+| REST API co-existence | pydantic models reusable, endpoints must be rewritten | Write FastAPI separately | `UseCaseService` mounts directly |
+| N+1 protection | Manual `selectinload` | DataLoader auto-batching | DataLoader auto-batching |
+| Tool safety annotations | ✅ `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` help the agent decide whether a call is safe | ❌ GraphQL schema has no equivalent | ❌ same |
+| MCP Resources (URI-addressable resources) | ✅ `@mcp.resource("config://...")` exposes config / files / docs | ❌ tools only | ❌ tools only |
+| MCP Prompts (predefined prompt templates) | ✅ `@mcp.prompt` gives the agent structured prompts | ❌ tools only | ❌ tools only |
 
 ---
 
-## 设计哲学：把 AI agent 当成又一个前端
+## Design philosophy: AI agent as yet another frontend client
 
-回头看量化对比表里 FastMCP 的几个痛点——over-fetch、没法字段选择、没法组合查询、启动时 schema token 占用随工具数线性增长——前端工程师会很眼熟。这正是 2015 年 REST + BFF 时代天天吵架的事。GraphQL 当年就是为了解决这些而生的：字段选择、嵌套查询、强类型契约、按需组合。
+Look back at FastMCP's pain points in the comparison table — over-fetch, no field
+selection, no composed queries, schema tokens growing linearly with tool count.
+Frontend engineers will find these very familiar. This is exactly what REST + BFF
+teams argued about daily around 2015. GraphQL was invented to solve precisely
+these: field selection, nested queries, strongly-typed contracts, composition on
+demand.
 
-agent 现在撞上同一堵墙，只是换了个名字叫 "tools/list 的 token 预算"。
+Agents are now hitting the same wall, just renamed to "the tools/list token budget."
 
-NexusX 做的事不是"发明一个 MCP 框架"，而是**把 SQLModel 实体当作 GraphQL schema 的单一真相源，让 agent 通过 GraphQL-over-MCP 拿到所有能力**。一行 `create_simple_mcp_server` 背后真正起作用的是这套继承关系——agent 拿到的不是"为 AI 设计的新协议"，而是"为前端设计、已经被亿级生产流量验证过的协议"。
+NexusX isn't "inventing a new MCP framework." It treats **SQLModel entities as the
+single source of truth for a GraphQL schema, and lets the agent consume every
+capability via GraphQL-over-MCP.** What makes one line of `create_simple_mcp_server`
+work is this inheritance: the agent doesn't get "a new protocol designed for AI,"
+it gets "a protocol designed for frontends, validated by billions of production
+requests."
 
-这个抽象的价值有三层：
+This abstraction pays out at three levels:
 
-1. **Agent 的能力上限被抬高了**——组合查询、字段投影、嵌套关系一次往返，这些是 GraphQL 的红利，agent 现在白捡。
-2. **存量 SQLModel 项目几乎免费接入**——本来就有 entity，加几个 `@query` 装饰器就有 MCP。FastMCP 路径要重写一遍工具层。
-3. **`UseCaseService` 让 REST 跟着 MCP 一起免费**——业务逻辑写一遍，agent 和前端两面交付。
+1. **The agent's capability ceiling goes up.** Composed queries, field projection,
+   nested relationships in one round trip — all GraphQL dividends the agent now
+   inherits for free.
+2. **Existing SQLModel projects adopt it almost for free.** You already have
+   entities; a handful of `@query` decorators gets you MCP. Path A would require
+   rewriting the entire tool layer.
+3. **`UseCaseService` makes REST free alongside MCP.** Write the business logic
+   once; deliver to both agent and frontend.
 
-但前提是：**数据有结构、关系可遍历**。如果 agent 要做的不是查数据库——而是发邮件、改图片、调外部 API——GraphQL 的抽象反而是阻碍，FastMCP 那种"工具即函数"的模型更合适。下一节展开边界。
-
----
-
-## opinionated GraphQL：用约束换可预测性
-
-但 GraphQL 协议本身有个长期被诟病的痛点：**灵活度过高，约束力度不够**。
-
-社区里推 schema 风格的声音从来不统一——Apollo 推 schema-first + business-aligned types，Facebook 早期按 UI 组件组织，绝大多数团队最后却把 ORM 模型直接映射成 GraphQL type。三种风格混用，schema 就开始烂。问题本质是 GraphQL 只规定了**语法**，没规定**风格**——团队"找不到最佳实践"不是没努力，是协议没给约束。
-
-NexusX 在这一层加了个 opinionated 的框架约束，两条 API 路径泾渭分明：
-
-- **B1（simple 模式）= 强制面向 model**——从 SQLModel 元数据自动生成 schema，你不能乱加字段。本质是"自动化的 ORM → GraphQL 映射"，但因为是框架生成的，没有"团队要不要这样"的争论空间。
-- **B2（UseCase 模式）= 强制面向 business**——schema 必须挂在 `UseCaseService` 方法上，按业务用例组织，不写业务方法就没有字段。这一条把 Facebook / Apollo 推崇的 business-aligned 风格变成了**唯一的代码路径**。
-
-**用户没机会走偏**——不是"找最佳实践"，是"框架替你选好了"。GraphQL 协议层仍然保留查询能力（字段选择、嵌套、组合），但 schema 设计自由度被剥夺了。这跟 Strawberry / Ariadne 那种"给你一个 GraphQL endpoint、schema 自己设计"是相反方向。
-
-一句话：**NexusX 不是更好的 GraphQL 框架，是更不自由的 GraphQL 框架——而不自由恰恰是它解决"找不到最佳实践"的方式。**
-
-这也设定了它的适用边界：如果你需要 schema 设计自由度（多团队协作、复杂联邦 schema、跨域类型协调），NexusX 反而是阻碍。下一节展开。
-
----
-
-## 诚实的边界
-
-NexusX 不是所有场景都更合适。
-
-**适合用 NexusX**：
-
-- 项目本来就用 SQLModel / SQLAlchemy
-- 需要把数据库实体或业务方法暴露给 AI Agent
-- 同时需要 REST 和 MCP 双交付（→ UseCase 模式）
-- 实体多、关系复杂、嵌套查询频繁
-
-**适合继续用 FastMCP**：
-
-- MCP 工具是独立的"无状态函数"——比如 `send_email(to, subject)`、`resize_image(url, width)`，跟数据库无关
-- 工具数量很少（< 5 个）且不会增长
-- 非 Python 生态（FastMCP 还有 TypeScript / Go 版本）
-- 你需要非常精确地控制每个工具的 description / 参数顺序，GraphQL 抽象反而是阻碍
-- **需要 MCP 协议的完整三面**（tools + resources + prompts）：FastMCP 是完整的 MCP server 框架，NexusX 专注于把 SQLModel / 业务方法暴露成 tools（GraphQL-over-MCP），不覆盖 resources 和 prompts
-
-### FastMCP 在本对比之外的优势
-
-为了让对比公平，下面这些是 FastMCP 真实存在、但跟"暴露 SQLModel 实体"这个核心场景无关或弱相关的优势：
-
-- **Tool annotations**：`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 等 hint，agent 用来判断调用是否安全（比如"只读工具可以放心试")。GraphQL schema 里没有等价概念。
-- **MCP Resources**：`@mcp.resource("config://...")` 暴露 URI 寻址的资源（配置、文档、文件等），跟 tools 是不同的访问模式。
-- **MCP Prompts**：`@mcp.prompt` 定义可复用的提示模板，agent 可以拿到结构化 prompt。
-- **Context 注入 + Lifespan**：FastMCP 工具可以注入 `Context`（progress、logging、state），server 启停有 lifespan hook。
-- **Server composition**：`mcp.import_server("prefix", other_mcp)` 把多个独立 server 组合起来。
-- **In-process / direct call**：FastMCP 工具可以直接当 Python 函数调用（用 `Client` 跳过协议层），方便写集成测试。
-- **Auth 集成**：FastMCP 内置 OAuth / bearer token 处理。
-
-如果你的需求超出"把数据库暴露给 agent"，比如要混合 tools + resources + prompts，FastMCP 才是更合适的基础。
+The load-bearing assumption: **data has structure and relationships are
+traversable.** If the agent's job isn't querying a database — it's sending emails,
+resizing images, calling external APIs — GraphQL abstraction is a hindrance and
+FastMCP's "tool = function" model fits better. The next section expands on the
+boundaries.
 
 ---
 
-## 五分钟清单
+## Opinionated GraphQL: trading freedom for predictability
+
+GraphQL itself has a long-standing critique: **too flexible, not enough constraint.**
+
+The community has never agreed on schema style. Apollo pushes schema-first +
+business-aligned types. Early Facebook organized schemas around UI components.
+Most teams end up mapping ORM models directly to GraphQL types. Three styles in
+the same schema, and it starts to rot. The root cause: GraphQL specifies
+**syntax**, not **style** — "can't find the best practice" isn't lack of effort,
+it's the protocol giving no constraints.
+
+NexusX adds an opinionated framework constraint at this layer. Two API paths,
+sharply separated:
+
+- **B1 (simple mode) = strictly model-oriented.** Schema is auto-generated from
+  SQLModel metadata; you can't sneak in ad-hoc fields. It's "automated ORM →
+  GraphQL mapping," but because the framework generates it, there's no "should
+  the team do this?" debate.
+- **B2 (UseCase mode) = strictly business-oriented.** Schema must hang off
+  `UseCaseService` methods, organized by business use case. No business method,
+  no field. This turns the business-aligned style championed by Facebook / Apollo
+  into **the only code path.**
+
+**Users can't drift** — it's not "find the best practice," it's "the framework
+already picked one." GraphQL's query capabilities (field selection, nesting,
+composition) are preserved at the protocol layer, but schema-design freedom is
+removed. This is the opposite direction from Strawberry / Ariadne, which hand
+you a GraphQL endpoint and let you design the schema yourself.
+
+One sentence: **NexusX isn't a better GraphQL framework, it's a more restrictive
+one — and the restriction is exactly how it solves "can't find best practices."**
+
+This also draws its applicability boundary: if you need schema-design freedom
+(multi-team collaboration, complex federated schemas, cross-domain type
+coordination), NexusX is a hindrance. The next section expands.
+
+---
+
+## Honest boundaries
+
+NexusX isn't the right fit for every scenario.
+
+**Use NexusX when**:
+
+- The project is already on SQLModel / SQLAlchemy.
+- You need to expose database entities or business methods to an AI agent.
+- REST and MCP both need to be delivered (→ UseCase mode).
+- Many entities, complex relationships, frequent nested queries.
+
+**Keep using FastMCP when**:
+
+- MCP tools are stateless functions — `send_email(to, subject)`,
+  `resize_image(url, width)`, unrelated to a database.
+- Tool count is small (< 5) and won't grow.
+- You're outside the Python ecosystem (FastMCP has TypeScript / Go versions).
+- You need precise control over each tool's description / argument order, and
+  GraphQL abstraction is in the way.
+- **You need the full MCP triangle** (tools + resources + prompts). FastMCP is a
+  complete MCP server framework; NexusX focuses on exposing SQLModel / business
+  methods as tools (GraphQL-over-MCP) and doesn't cover resources or prompts.
+
+### FastMCP advantages outside this comparison's scope
+
+For fairness, these are real FastMCP capabilities that are unrelated (or weakly
+related) to the core "expose SQLModel entities" scenario:
+
+- **Tool annotations**: `readOnlyHint` / `destructiveHint` / `idempotentHint` /
+  `openWorldHint` — hints the agent uses to judge whether a call is safe ("read-only
+  tool, safe to try"). GraphQL schemas have no equivalent.
+- **MCP Resources**: `@mcp.resource("config://...")` exposes URI-addressable
+  resources (configs, docs, files) — a different access pattern from tools.
+- **MCP Prompts**: `@mcp.prompt` defines reusable prompt templates the agent can
+  consume as structured prompts.
+- **Context injection + Lifespan**: FastMCP tools can inject `Context` (progress,
+  logging, state); the server has lifespan hooks for startup/shutdown.
+- **Server composition**: `mcp.import_server("prefix", other_mcp)` combines
+  multiple independent servers.
+- **In-process / direct call**: FastMCP tools can be invoked as plain Python
+  functions (via `Client`, skipping the protocol layer) — handy for integration
+  tests.
+- **Auth integration**: FastMCP has built-in OAuth / bearer-token handling.
+
+If your needs go beyond "expose the database to an agent" — say, mixing tools +
+resources + prompts — FastMCP is the better foundation.
+
+---
+
+## Five-minute checklist
 
 ```bash
-# Step 1: 安装（30 秒）
+# Step 1: install (30 seconds)
 git clone https://github.com/allmonday/nexusx-vs-fastmcp.git
 cd nexusx-vs-fastmcp
 uv sync
 ```
 
 ```python
-# Step 2: 复用你已有的 SQLModel 实体
-# 给每个实体加 @query / @mutation 方法（业务代码，不是 MCP 样板）
-# 或者把它们组织成 UseCaseService 子类
+# Step 2: reuse your existing SQLModel entities
+# Add @query / @mutation methods to each entity (business code, not MCP boilerplate)
+# Or organize them as UseCaseService subclasses
 ```
 
 ```python
-# Step 3: 创建 MCP 服务（5 秒）
+# Step 3: create the MCP service (5 seconds)
 from nexusx.mcp import create_simple_mcp_server
 
 mcp = create_simple_mcp_server(
@@ -481,13 +574,13 @@ mcp = create_simple_mcp_server(
 ```
 
 ```python
-# Step 4: 运行
-mcp.run()                                       # stdio，给 Claude Desktop / Cursor 用
-# mcp.http_app(transport="streamable-http")     # HTTP，给 Web 端 Agent 用（见各 server 的 --http 分支）
+# Step 4: run
+mcp.run()                                       # stdio, for Claude Desktop / Cursor
+# mcp.http_app(transport="streamable-http")     # HTTP, for web agents (see each server's --http branch)
 ```
 
 ```json
-// Step 5: 接入 Claude Desktop（~/.config/claude/claude_desktop_config.json）
+// Step 5: hook into Claude Desktop (~/.config/claude/claude_desktop_config.json)
 {
   "mcpServers": {
     "blog": {
@@ -498,30 +591,34 @@ mcp.run()                                       # stdio，给 Claude Desktop / C
 }
 ```
 
-重启 Claude Desktop，对话里直接问"列出所有用户及其最近一篇 post"——Agent 会自动发现 schema、构造 GraphQL 查询、一次拿到结果。
+Restart Claude Desktop and ask in chat: "list all users with their most recent
+post." The agent will discover the schema, construct the GraphQL query, and fetch
+the result in one round trip.
 
 ---
 
-## 项目结构
+## Project layout
 
 ```
 nexusx-vs-fastmcp/
-├── README.md                    # 中文版（主）
-├── README.en.md                 # 英文版
-├── pyproject.toml               # uv-managed（nexusx 从 git 拉）
-├── init_db.py                   # 一次性为三个 db 建表 + 种子
-├── fastmcp_handwritten.py       # 路径 A：7 个 @mcp.tool
-├── nexusx_simple.py             # 路径 B1：@query/@mutation + create_simple_mcp_server
-└── nexusx_usecase.py            # 路径 B2：UseCaseService + 4 层渐进披露
+├── README.md                    # English version (this file)
+├── README.zh.md                 # Chinese version
+├── pyproject.toml               # uv-managed (nexusx pulled from git)
+├── init_db.py                   # one-shot schema + seed for all three DBs
+├── fastmcp_handwritten.py       # Path A: 7 @mcp.tool functions
+├── nexusx_simple.py             # Path B1: @query/@mutation + create_simple_mcp_server
+└── nexusx_usecase.py            # Path B2: UseCaseService + 4-layer progressive discovery
 ```
 
-三个 server 用独立的 sqlite 文件（`blog_fastmcp.db` / `blog_nexusx_simple.db` / `blog_nexusx_usecase.db`），互不干扰，可以同时跑。
+The three servers use independent sqlite files (`blog_fastmcp.db` /
+`blog_nexusx_simple.db` / `blog_nexusx_usecase.db`). They don't interfere and
+can run concurrently.
 
 ---
 
-## 进一步阅读
+## Further reading
 
-- [NexusX MCP 服务文档](https://github.com/allmonday/nexusx/blob/main/docs/advanced/mcp_service.zh.md) — `create_simple_mcp_server` 与 `create_mcp_server`（多应用）的完整参数
-- [NexusX UseCase 服务文档](https://github.com/allmonday/nexusx/blob/main/docs/advanced/use_case_service.zh.md) — 4 层渐进披露 MCP + FastAPI 同源
-- [NexusX GraphQL 模式](https://github.com/allmonday/nexusx/blob/main/docs/guide/graphql_mode.zh.md) — MCP 底层使用的 GraphQL API 细节
-- [NexusX 主项目](https://github.com/allmonday/nexusx) — 从 SQLModel 类自动生成 GraphQL + Core API + MCP
+- [NexusX MCP service docs](https://github.com/allmonday/nexusx/blob/main/docs/advanced/mcp_service.zh.md) — full parameters for `create_simple_mcp_server` and `create_mcp_server` (multi-app)
+- [NexusX UseCase service docs](https://github.com/allmonday/nexusx/blob/main/docs/advanced/use_case_service.zh.md) — 4-layer progressive-disclosure MCP + FastAPI co-existence
+- [NexusX GraphQL mode](https://github.com/allmonday/nexusx/blob/main/docs/guide/graphql_mode.zh.md) — the GraphQL API that MCP uses under the hood
+- [NexusX main project](https://github.com/allmonday/nexusx) — auto-generate GraphQL + Core API + MCP from SQLModel classes
