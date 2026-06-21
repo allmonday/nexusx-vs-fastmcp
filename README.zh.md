@@ -1,8 +1,10 @@
 # 五分钟搭建 MCP 服务：NexusX vs 手写 FastMCP
 
-> 面向已经用 SQLModel 写过实物的开发者。目标：把数据库暴露给 Claude / Cursor 等 AI Agent。
->
-> 本 repo 是可运行的对比 demo——三条路径的代码都在，每个 server 都能独立启动。
+一个可运行的对比 demo：把 SQLModel 实体暴露给 AI agent（Claude / Cursor）的三种方式——手写 [FastMCP](https://github.com/jlowin/fastmcp)、NexusX 的 simple GraphQL-over-MCP 模式、NexusX 的 UseCase 模式（4 层渐进披露）。每条路径在本 repo 里都有完整可运行代码。
+
+**FastMCP 的局限（一段话）**：它是个扎实的工具框架——pydantic 驱动的 `inputSchema` / `outputSchema` 生成做得确实好。但当 agent 的任务是查询结构化数据时，扁平工具模型暴露出结构性局限：工具数量随实体线性增长、agent 启动要加载全部工具描述（schema token 占用大）、`tools/call` 没有字段投影导致 over-fetch、每个嵌套或组合查询都得单独写一个工具。这些不是实现 bug——是"工具即函数"撞上"数据即图"的必然结果。
+
+**NexusX 干了什么（一段话）**：把同一份 SQLModel 实体当作 GraphQL schema 的单一真相源，再用 MCP 包住。一行 `create_simple_mcp_server`（业务方法用 `create_use_case_graphql_mcp_server`），agent 就继承了 GraphQL 十年沉淀的查询能力——字段选择、DataLoader 批量、多实体组合查询、4 层渐进式披露。文章也讲了*为什么这样设计有效*（AI agent 是又一个前端客户端）和*NexusX 怎么避免 GraphQL "太自由、找不到最佳实践" 的陷阱*（每条代码路径强制一种 schema 风格——B1 严格面向 model，B2 严格面向 business）。
 
 **English**: [README.md](./README.md)
 

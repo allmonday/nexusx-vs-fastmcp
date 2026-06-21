@@ -1,10 +1,10 @@
 # Five Minutes to an MCP Service: NexusX vs Hand-Written FastMCP
 
-> For developers who already have SQLModel entities lying around. Goal: expose
-> the database to AI agents like Claude / Cursor.
->
-> This repo is a runnable side-by-side demo — all three paths have real code,
-> each server starts independently.
+A runnable side-by-side comparison of three ways to expose SQLModel entities to AI agents (Claude / Cursor): hand-written [FastMCP](https://github.com/jlowin/fastmcp), NexusX's simple GraphQL-over-MCP mode, and NexusX's UseCase mode with 4-layer progressive disclosure. Each path has full runnable code in this repo.
+
+**FastMCP's limits, in one paragraph**: it's a solid tool framework — pydantic-driven `inputSchema` / `outputSchema` generation is genuinely good. But when the agent's job is querying structured data, the flat tool model shows structural limits: tool count grows linearly with entities, agents must load every tool description up front (schema-token cost), `tools/call` has no field projection so responses over-fetch, and every nested or composed query needs a bespoke tool. These aren't implementation bugs — they're consequences of "tool = function" meeting "data = graph."
+
+**NexusX's role, in one paragraph**: take the same SQLModel entities and treat them as the single source of truth for a GraphQL schema, then wrap that schema in MCP. One line of `create_simple_mcp_server` (or `create_use_case_graphql_mcp_server` for business methods) and the agent inherits a decade of frontend-grade query tooling — field selection, DataLoader batching, composed multi-entity queries, 4-layer progressive disclosure. The article also explains *why* this design works (AI agent as yet another frontend client) and *how* NexusX avoids GraphQL's "too flexible, no best practice" trap (each code path forces one schema style — B1 is strictly model-oriented, B2 is strictly business-oriented).
 
 **中文版**: [README.zh.md](./README.zh.md)
 
