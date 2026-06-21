@@ -164,8 +164,9 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
 1. **每个实体 N 倍工作量**：User 3 个工具、Post 3 个工具……工具数量随实体线性增长。schema 自动化省掉了字段定义，但工具本身仍然要逐个手写。
 2. **嵌套数据要单独设计工具**：想要"带 author 的 post 列表"，必须手写 `list_posts_with_author` + 一个 `PostWithAuthor` 模型 + 显式 `selectinload`。再多一层关系（`posts { author { comments } }`）就要再加一个工具和一个模型。
 3. **工具墙**：Agent 一启动就读到全部 7 个工具的 schema 描述——即便这次任务只用得上 `list_posts`。schema 自动化反而让每个工具的描述变得更详细，token 占用更大。
-4. **没有组合查询能力**：Agent 想"同时拿 User 列表和 Post 列表"必须两次往返。
-5. **REST 同源要重写**：同一个业务逻辑想给前端用，得再写一份 FastAPI 路由（虽然 pydantic 模型可以复用）。
+4. **Over-fetch / 没法按需选字段**：MCP 协议的 `tools/call` 没有"只要某些字段"的参数。Agent 调 `get_user` 必须接受整个 `UserOut`（id + name + email 全返回），就算它只关心 `name`。模型字段越多浪费越严重——pydantic 模型字段一多，单次响应 token 就线性涨。
+5. **没有组合查询能力**：Agent 想"同时拿 User 列表和 Post 列表"必须两次往返。
+6. **REST 同源要重写**：同一个业务逻辑想给前端用，得再写一份 FastAPI 路由（虽然 pydantic 模型可以复用）。
 
 ---
 
@@ -369,6 +370,7 @@ router = create_use_case_router(
 | 嵌套关系查询 | 手写工具 + 嵌套模型 + `selectinload` | GraphQL 字段嵌套，DataLoader 自动 | 业务方法层组合 |
 | 工具数量增长 | 线性（每实体 +N 工具） | 常数（固定 3 个） | 常数（固定 4 个） |
 | Agent 启动时 schema 加载 | 全部工具描述（schema 越细，token 越多） | 1 个 `get_schema` 工具，按需下钻 | 3 层下钻（apps → schema → method） |
+| 返回字段过滤（防 over-fetch） | ❌ 工具返回整个 pydantic 模型，agent 无法按需选字段 | ✅ GraphQL 字段选择 | ✅ GraphQL 字段选择 |
 | 组合查询（多实体一次往返） | 不支持 | 原生 GraphQL | 原生 GraphQL |
 | REST API 同源 | pydantic 模型可复用，但端点要重写 | 另写 FastAPI | `UseCaseService` 直接挂 |
 | N+1 防护 | 手动 `selectinload` | DataLoader 自动批量 | DataLoader 自动批量 |
