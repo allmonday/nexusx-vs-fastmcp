@@ -163,7 +163,7 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
 
 1. **每个实体 N 倍工作量**：User 3 个工具、Post 3 个工具……工具数量随实体线性增长。schema 自动化省掉了字段定义，但工具本身仍然要逐个手写。
 2. **嵌套数据要单独设计工具**：想要"带 author 的 post 列表"，必须手写 `list_posts_with_author` + 一个 `PostWithAuthor` 模型 + 显式 `selectinload`。再多一层关系（`posts { author { comments } }`）就要再加一个工具和一个模型。
-3. **工具墙**：Agent 一启动就读到全部 7 个工具的 schema 描述——即便这次任务只用得上 `list_posts`。schema 自动化反而让每个工具的描述变得更详细，token 占用更大。
+3. **工具墙**：Agent 启动时得拿到全部 7 个工具的 schema 才能用——即便这次任务只用得上 `list_posts`。schema 自动化反而让每个工具的描述变得更详细，token 占用更大。FastMCP 支持 `tools/list` 分页（cursor）可以分批发现，但只是省初次发现的延迟，agent 真用工具时仍然要加载完整 schema，token 总量没省。
 4. **Over-fetch / 没法按需选字段**：MCP 协议的 `tools/call` 没有"只要某些字段"的参数。Agent 调 `get_user` 必须接受整个 `UserOut`（id + name + email 全返回），就算它只关心 `name`。模型字段越多浪费越严重——pydantic 模型字段一多，单次响应 token 就线性涨。
 5. **没有组合查询能力**：Agent 想"同时拿 User 列表和 Post 列表"必须两次往返。
 6. **REST 同源要重写**：同一个业务逻辑想给前端用，得再写一份 FastAPI 路由（虽然 pydantic 模型可以复用）。
@@ -374,6 +374,9 @@ router = create_use_case_router(
 | 组合查询（多实体一次往返） | 不支持 | 原生 GraphQL | 原生 GraphQL |
 | REST API 同源 | pydantic 模型可复用，但端点要重写 | 另写 FastAPI | `UseCaseService` 直接挂 |
 | N+1 防护 | 手动 `selectinload` | DataLoader 自动批量 | DataLoader 自动批量 |
+| Tool 安全标注（annotations） | ✅ `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 帮 agent 决策调用是否安全 | ❌ GraphQL schema 无等价机制 | ❌ 同左 |
+| MCP Resources（URI 寻址资源） | ✅ `@mcp.resource("config://...")` 暴露配置 / 文件 / 文档 | ❌ 仅 tools | ❌ 仅 tools |
+| MCP Prompts（预定义提示模板） | ✅ `@mcp.prompt` 给 agent 提供结构化 prompt | ❌ 仅 tools | ❌ 仅 tools |
 
 ---
 
@@ -394,6 +397,21 @@ NexusX 不是所有场景都更合适。
 - 工具数量很少（< 5 个）且不会增长
 - 非 Python 生态（FastMCP 还有 TypeScript / Go 版本）
 - 你需要非常精确地控制每个工具的 description / 参数顺序，GraphQL 抽象反而是阻碍
+- **需要 MCP 协议的完整三面**（tools + resources + prompts）：FastMCP 是完整的 MCP server 框架，NexusX 专注于把 SQLModel / 业务方法暴露成 tools（GraphQL-over-MCP），不覆盖 resources 和 prompts
+
+### FastMCP 在本对比之外的优势
+
+为了让对比公平，下面这些是 FastMCP 真实存在、但跟"暴露 SQLModel 实体"这个核心场景无关或弱相关的优势：
+
+- **Tool annotations**：`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 等 hint，agent 用来判断调用是否安全（比如"只读工具可以放心试")。GraphQL schema 里没有等价概念。
+- **MCP Resources**：`@mcp.resource("config://...")` 暴露 URI 寻址的资源（配置、文档、文件等），跟 tools 是不同的访问模式。
+- **MCP Prompts**：`@mcp.prompt` 定义可复用的提示模板，agent 可以拿到结构化 prompt。
+- **Context 注入 + Lifespan**：FastMCP 工具可以注入 `Context`（progress、logging、state），server 启停有 lifespan hook。
+- **Server composition**：`mcp.import_server("prefix", other_mcp)` 把多个独立 server 组合起来。
+- **In-process / direct call**：FastMCP 工具可以直接当 Python 函数调用（用 `Client` 跳过协议层），方便写集成测试。
+- **Auth 集成**：FastMCP 内置 OAuth / bearer token 处理。
+
+如果你的需求超出"把数据库暴露给 agent"，比如要混合 tools + resources + prompts，FastMCP 才是更合适的基础。
 
 ---
 
