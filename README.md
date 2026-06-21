@@ -398,6 +398,25 @@ NexusX 做的事不是"发明一个 MCP 框架"，而是**把 SQLModel 实体当
 
 ---
 
+## opinionated GraphQL：用约束换可预测性
+
+但 GraphQL 协议本身有个长期被诟病的痛点：**灵活度过高，约束力度不够**。
+
+社区里推 schema 风格的声音从来不统一——Apollo 推 schema-first + business-aligned types，Facebook 早期按 UI 组件组织，绝大多数团队最后却把 ORM 模型直接映射成 GraphQL type。三种风格混用，schema 就开始烂。问题本质是 GraphQL 只规定了**语法**，没规定**风格**——团队"找不到最佳实践"不是没努力，是协议没给约束。
+
+NexusX 在这一层加了个 opinionated 的框架约束，两条 API 路径泾渭分明：
+
+- **B1（simple 模式）= 强制面向 model**——从 SQLModel 元数据自动生成 schema，你不能乱加字段。本质是"自动化的 ORM → GraphQL 映射"，但因为是框架生成的，没有"团队要不要这样"的争论空间。
+- **B2（UseCase 模式）= 强制面向 business**——schema 必须挂在 `UseCaseService` 方法上，按业务用例组织，不写业务方法就没有字段。这一条把 Facebook / Apollo 推崇的 business-aligned 风格变成了**唯一的代码路径**。
+
+**用户没机会走偏**——不是"找最佳实践"，是"框架替你选好了"。GraphQL 协议层仍然保留查询能力（字段选择、嵌套、组合），但 schema 设计自由度被剥夺了。这跟 Strawberry / Ariadne 那种"给你一个 GraphQL endpoint、schema 自己设计"是相反方向。
+
+一句话：**NexusX 不是更好的 GraphQL 框架，是更不自由的 GraphQL 框架——而不自由恰恰是它解决"找不到最佳实践"的方式。**
+
+这也设定了它的适用边界：如果你需要 schema 设计自由度（多团队协作、复杂联邦 schema、跨域类型协调），NexusX 反而是阻碍。下一节展开。
+
+---
+
 ## 诚实的边界
 
 NexusX 不是所有场景都更合适。
