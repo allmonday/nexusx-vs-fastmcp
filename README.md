@@ -4,6 +4,8 @@
 >
 > 本 repo 是可运行的对比 demo——三条路径的代码都在，每个 server 都能独立启动。
 
+**English**: [README.en.md](./README.en.md)
+
 ## 快速运行
 
 ```bash
@@ -504,7 +506,8 @@ mcp.run()                                       # stdio，给 Claude Desktop / C
 
 ```
 nexusx-vs-fastmcp/
-├── README.md                    # 本文
+├── README.md                    # 中文版（主）
+├── README.en.md                 # 英文版
 ├── pyproject.toml               # uv-managed（nexusx 从 git 拉）
 ├── init_db.py                   # 一次性为三个 db 建表 + 种子
 ├── fastmcp_handwritten.py       # 路径 A：7 个 @mcp.tool
