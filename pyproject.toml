@@ -1,0 +1,22 @@
+[project]
+name = "nexusx-vs-fastmcp"
+version = "0.1.0"
+description = "Side-by-side demo: hand-written FastMCP vs NexusX for exposing SQLModel entities to AI agents."
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=0.2.0",
+    "sqlmodel>=0.0.16",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.19.0",
+    "nexusx[fastmcp]>=3.0.0",
+]
+
+[tool.uv.sources]
+nexusx = { git = "https://github.com/allmonday/nexusx.git" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = []
