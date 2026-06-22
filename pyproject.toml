@@ -8,11 +8,8 @@ dependencies = [
     "sqlmodel>=0.0.16",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.19.0",
-    "nexusx[fastmcp]>=3.0.0",
+    "nexusx[fastmcp]>=3.0.1",
 ]
-
-[tool.uv.sources]
-nexusx = { git = "https://github.com/allmonday/nexusx.git" }
 
 [build-system]
 requires = ["hatchling"]

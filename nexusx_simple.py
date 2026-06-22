@@ -119,8 +119,8 @@ async def init_db() -> None:
         await s.commit()
 
 
-async def main_stdio() -> None:
-    await init_db()
+def main_stdio() -> None:
+    asyncio.run(init_db())
     mcp.run()
 
 
@@ -144,4 +144,4 @@ if __name__ == "__main__":
     if "--http" in sys.argv:
         main_http()
     else:
-        asyncio.run(main_stdio())
+        main_stdio()
