@@ -570,15 +570,6 @@ field-level validation errors (*"`email`: missing required field"*). GraphQL
 parse or validation errors are often structural (*"Expected Name, found `}`"*)
 and harder for the agent to recover from.
 
-**Persisted-query tooling needs rethinking, not abandonment.** Production
-GraphQL deployments usually cache and rate-limit via persisted queries,
-which depend on a fixed query set. Agents generate fresh query strings every
-call, so the pure-persisted-query model doesn't transfer. The
-community-recommended replacement is a hybrid: dynamic query generation
-plus an operation whitelist that gates runtime queries against a known-good
-set (Apollo and others document this pattern for agent traffic). The burden
-shifts to the server side; it doesn't disappear.
-
 **Schema changes have wider blast radius.** A renamed GraphQL field breaks
 every agent query that referenced it. A renamed flat tool only breaks callers
 of that one tool. Field-level coupling makes GraphQL schemas more fragile

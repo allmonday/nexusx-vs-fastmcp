@@ -387,8 +387,6 @@ B2（UseCase 模式）严格面向 business。schema 必须挂在 `UseCaseServic
 
 然后是错误信息更难自纠。FastMCP 加 pydantic 给出字段级校验错误，比如"`email`：缺少必填字段"。GraphQL 的 parse / validation 错误常常是结构性的，比如"Expected Name, found `}`"，agent 更难从中恢复。
 
-另外，persisted query 不是失效，是要重新设计。生产级 GraphQL 部署通常靠 persisted query 做缓存和限流，但这依赖固定的查询集合。Agent 每次都生成新的查询字符串，所以纯 persisted query 模型不适用。社区推荐的替代方案是混合模式：动态生成查询加一个 operation whitelist，运行时把查询对已知良品集合做门禁（Apollo 等都有针对 agent 流量的文档）。负担转移到服务端，但没有消失。
-
 最后是 schema 变更影响半径更大。GraphQL 重命名一个字段，会断掉所有引用它的 agent 查询；扁平 tool 重命名只会断掉调那个工具的 caller。字段级耦合让 GraphQL schema 在 agent 流量下更脆弱。
 
 这些不会抵消结构性收益（字段投影、渐进披露、嵌套组合），但这是把查询形状从设计时挪到运行时的代价。
