@@ -1,10 +1,54 @@
 # GraphQL-based MCP: Expose Database and Business API to AI Agents
 
-A runnable side-by-side comparison of **two paradigms** for exposing SQLModel entities to AI agents (Claude / Cursor): **flat-tool MCP** (hand-written [FastMCP](https://github.com/jlowin/fastmcp) as the reference) vs **GraphQL-based MCP** (with [NexusX](https://github.com/allmonday/nexusx) as one reference implementation). Each path has full runnable code in this repo.
+The past year turned MCP (Model Context Protocol) from an Anthropic-internal
+spec into a de facto standard. Claude Desktop, Cursor, Claude Code, Cline, and
+Codex all support it; a thousand-plus community servers now hand agents
+databases, file systems, SaaS APIs, and internal tools. Being able to expose
+backends to LLMs at this scale is a real step forward for the agent ecosystem.
 
-**Flat-tool MCP's limits, in one paragraph**: FastMCP is a solid tool framework — pydantic-driven `inputSchema` / `outputSchema` generation is genuinely good. But when the agent's job is querying structured data, the "tool = function" model shows structural limits: tool count grows linearly with entities, agents must load every tool description up front (schema-token cost), `tools/call` has no field projection so responses over-fetch, and every nested or composed query needs a bespoke tool. These aren't implementation bugs — they're consequences of "tool = function" meeting "data = graph."
+But MCP's default tool model — each capability is a standalone function with
+fixed arguments and a fixed return shape — starts to strain when the thing
+being exposed is **structured data**. A `User` has `Post`s, a `Post` has an
+`Author`, an `Author` has `Post`s again: a two-entity toy model already has
+dozens of query shapes an agent might ask for. flat-tool MCP asks you to
+anticipate each one and pre-write a tool function plus a pydantic I/O model.
+That's structural — a property of the *tool = function* contract meeting
+*data = graph* — not an implementation bug.
 
-**GraphQL-based MCP in one paragraph**: model the data or business methods as a GraphQL schema, then wrap that schema in MCP. The agent no longer calls N tools — it writes one GraphQL query. Field selection, DataLoader batching, multi-entity composition, and 4-layer progressive disclosure are GraphQL dividends the agent inherits for free. NexusX is one opinionated implementation of this paradigm; other options are surveyed in [Other implementations](#other-implementations-of-graphql-based-mcp). The article also explains *why* this design works (AI agent as yet another frontend client) and *how* NexusX avoids GraphQL's "too flexible, no best practice" trap (each code path forces one schema style — B1 is strictly model-oriented, B2 is strictly business-oriented).
+Tools are fixed-shape functions; data is a many-shape graph — this mismatch
+isn't new. Frontend engineers hit the same wall in the REST + BFF era around
+2015; the answer then was GraphQL: field projection solves over-fetch,
+nested resolution solves N+1, strongly-typed schemas solve contract drift.
+A decade of accumulated practice — DataLoader, depth limiting, cost
+analysis, persisted queries — is already mature and ready to use.
+
+GraphQL-based MCP hands this infrastructure to the agent — but **without
+making you stand up your own GraphQL server, hand-write a pile of resolvers,
+or take on Apollo / Strawberry-grade operational burden**. The developer
+just declares database models (or business methods) as a GraphQL schema; the
+framework wraps that schema into MCP tools automatically. The agent inherits
+GraphQL's full query power; the developer gets the simplicity of *agent
+writes one query, fetches everything in one round trip* — not the burden of
+*yet another GraphQL service to maintain*.
+
+Picture a concrete task: an AI agent needs to answer *"show me Alice's posts
+and who wrote them."* Under flat-tool MCP — the style [FastMCP](https://github.com/jlowin/fastmcp)
+popularized — that's three tool calls plus a hand-written glue function the
+author had to anticipate. Under GraphQL-based MCP, it's one query the agent
+writes itself.
+
+This repo is a runnable side-by-side of both paradigms. The same `User` + `Post`
+entities, the same seed data, three full server implementations:
+
+- **Path A** — hand-written [FastMCP](https://github.com/jlowin/fastmcp): one
+  `@mcp.tool` per action.
+- **Path B1** — [NexusX](https://github.com/allmonday/nexusx) Simple:
+  `@query` / `@mutation` methods on the entity, one line to spin up MCP.
+- **Path B2** — NexusX UseCase: business-method-shaped MCP with four-layer
+  progressive disclosure.
+
+What follows isn't a feature checklist. It's a walk through what each paradigm
+*feels like to write* and what the agent *actually sees on the wire*.
 
 **中文版**: [README.zh.md](./README.zh.md)
 
@@ -27,33 +71,15 @@ python nexusx_usecase.py             # Path B2: NexusX UseCase (stdio)
 python nexusx_usecase.py --http
 ```
 
-stdio mode plugs into Claude Desktop / Cursor. HTTP mode is handy for `curl`
-probes or browser-based MCP clients during development.
+stdio plugs into Claude Desktop / Cursor. HTTP is handy for `curl` probes or
+browser-based MCP clients during development.
 
 ---
 
-## TL;DR
+## The task we'll keep coming back to
 
-Same requirement — "let an AI agent query and create Users and Posts" — three paths:
-
-| | Hand-written FastMCP | NexusX simple | NexusX UseCase |
-|---|---|---|---|
-| What you produce | 7 flat tools (3 per entity + 1 relationship-compensation tool) | 1 GraphQL endpoint + 3 MCP tools | 4-layer progressive-disclosure MCP tools |
-| Nested query (`posts { author { name } }`) | Must write a separate `list_posts_with_author` tool | Direct GraphQL nesting, DataLoader prevents N+1 | Business-method composition, DTOs decide shape |
-| Agent-side token cost | Reads all 7 tool descriptions upfront | 3 tools, schema drilled into on demand | 4 tools, three layers of drill-down |
-| REST API co-existence | Write a separate set of FastAPI routes | Same — write it again | The same `UseCaseService` mounts to FastAPI |
-
-The three paths are written out in full below. Every code snippet maps to a real file in this repo.
-
----
-
-## Shared starting point
-
-All three paths share the same entity definitions (`User` + `Post` in a one-to-many
-relationship) and the same seed data. The only difference is *how* they become an
-MCP service.
-
-Entity fields:
+Two SQLModel entities, a one-to-many relationship, and an agent that needs to
+navigate between them.
 
 ```python
 class User(SQLModel, table=True):
@@ -71,21 +97,20 @@ class Post(SQLModel, table=True):
     author: Optional["User"] = Relationship(back_populates="posts")
 ```
 
-Seed data: 2 users (Alice, Bob) and 3 posts.
+Seed data: two users (Alice, Bob) and three posts. Everything that follows is
+about *how each paradigm lets the agent move across this little graph* — and how
+much code you write to make that movement possible.
 
 ---
 
-## Path A: hand-written FastMCP (10+ minutes)
+## Path A: hand-writing FastMCP
 
 > Full code: [`fastmcp_handwritten.py`](./fastmcp_handwritten.py)
 
-FastMCP is the de facto standard for turning Python functions into MCP tools. One
-`@mcp.tool` decorator per tool.
-
-For fairness, this path uses FastMCP's **best practice**: arguments and return
-values are pydantic `BaseModel`s. FastMCP auto-generates `inputSchema` /
-`outputSchema` from the type annotations (including `Field(description=...)`
-metadata). FastMCP is genuinely good at this — it's not where NexusX differs.
+Most Python MCP projects start here. One `@mcp.tool` decorator per action,
+pydantic models for I/O so `inputSchema` / `outputSchema` come out clean.
+FastMCP is genuinely good at this part — schema generation isn't where NexusX
+differs.
 
 ```python
 from fastmcp import FastMCP
@@ -168,43 +193,62 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
         ]
 ```
 
-**What you actually produce**: 7 tools (`get_user`, `list_users`, `create_user`,
-`get_post`, `list_posts`, `create_post`, `list_posts_with_author`). FastMCP
-generates `inputSchema` + `outputSchema` for each; the docstring becomes the tool
-description. That part is free.
+Two entities, seven tools. That's where the friction starts to show — and it
+shows fast.
 
-### Pain points that remain
+**The tool wall shows up early.** Three tools per entity is the floor. By the
+time you have ten entities you're shipping thirty-plus tool descriptions.
+Eager-load clients — Cursor is the main example today — read all of them into
+context on startup, whether or not this particular task needs them. Recent
+Claude Code (and the new Claude Desktop) builds sidestep most of this via
+**Tool Search** — only the tool *name* goes into context, the schema is
+fetched per call — but the protocol itself has no built-in notion of
+progressive disclosure, only well-behaved clients. (Even then, both Claude
+Code and Codex have unfixed bugs around following `tools/list` pagination.)
+Each tool description is also more verbose than you'd expect, because schema
+automation pulls in every `Field(description=...)` and nested type. Token cost
+goes up, not down.
 
-1. **N× work per entity**: 3 tools for User, 3 for Post... tool count grows
-   linearly with entity count. Schema automation removed the field definitions
-   but you still hand-write each tool.
-2. **Nested data needs its own tool**: "posts with their author" requires a
-   hand-written `list_posts_with_author` + a `PostWithAuthor` model + an explicit
-   `selectinload`. One more level of nesting (`posts { author { comments } }`)
-   means another tool and another model.
-3. **Tool wall**: The agent has to load all 7 tool schemas before it can do
-   anything — even if this task only needs `list_posts`. Schema automation makes
-   each description *more* detailed, so token cost goes up, not down. FastMCP
-   supports `tools/list` pagination (cursor-based), which helps discovery latency
-   but doesn't reduce total schema tokens when the agent actually invokes a tool.
-4. **Over-fetch / no field projection**: MCP's `tools/call` has no
-   "just-these-fields" parameter. An agent calling `get_user` must accept the
-   entire `UserOut` (id + name + email returned in full), even if it only cares
-   about `name`. The more fields on the pydantic model, the worse the waste —
-   single-call response tokens scale linearly with model width.
-5. **No composed queries**: "Give me the user list AND the post list" means two
-   round trips.
-6. **REST isn't free**: The same business logic exposed to a web frontend needs a
-   separate set of FastAPI routes (pydantic models can be reused, endpoints can't).
+**Nested data needs its own tool.** *"Posts with their author"* requires
+`list_posts_with_author`, plus a `PostWithAuthor` pydantic model, plus an
+explicit `selectinload`. One more level of nesting — say
+`posts { author { comments } }` — means another tool and another model. Every
+shape the agent might want has to be anticipated and pre-written.
+
+**Over-fetch is structural.** MCP's `tools/call` has no "just these fields"
+parameter. An agent calling `get_user` accepts the whole `UserOut` whether it
+wants two fields or twelve. The wider the model, the more tokens per response.
+
+**Composed queries cost round trips.** *"Give me the user list AND the post
+list"* means two tool calls. The MCP spec removed JSON-RPC batch support in
+the 2025-06-18 revision (too fragile; complexity outweighed the benefit), so
+there's no longer a protocol-level way to collapse them either. Any *nested*
+composition (`users { posts { author } }`) requires a bespoke tool.
+
+**REST used to mean rewriting — now less so.** FastMCP 3.0 added
+`FastMCP.from_fastapi(app)`, which auto-promotes existing FastAPI routes to
+MCP tools, and you can mount an MCP server into a FastAPI ASGI app for the
+reverse direction. If you start from FastAPI, REST + MCP co-existence is
+largely solved. The structural caveat is that Path A's pattern — writing
+`@mcp.tool` functions directly, without an underlying FastAPI app — doesn't
+get the bridge automatically; you'd need to refactor to "FastAPI first, then
+expose via MCP" to inherit it. NexusX's `UseCaseService` (Path B2) approaches
+from the other direction: write the business method once, mount it to both
+MCP and FastAPI.
+
+None of this is a FastMCP bug. It's the shape of the contract — *tool =
+function* — meeting *data = graph*. The shape of the problem forces the shape of
+the pain.
 
 ---
 
-## Path B1: NexusX Simple (30 seconds)
+## Path B1: NexusX Simple
 
 > Full code: [`nexusx_simple.py`](./nexusx_simple.py)
 
-NexusX's premise: **`@query` / `@mutation` methods on the entity *are* GraphQL
-fields; MCP wraps the entire GraphQL endpoint automatically.**
+NexusX flips the premise. Instead of writing tools, you write queries. The
+`@query` / `@mutation` methods on the entity *are* the GraphQL fields; MCP
+wraps the whole GraphQL endpoint in one line.
 
 ```python
 from nexusx import mutation, query
@@ -252,24 +296,15 @@ mcp = create_simple_mcp_server(
 )
 ```
 
-**Business code is roughly the same as Path A** — you'd be writing "how to query
-users, how to create posts" anyway. NexusX doesn't magically remove that.
+The business code is roughly the same as Path A — you'd be writing *"how to
+query users, how to create posts"* anyway. NexusX doesn't magically remove that.
 
-The difference is what comes *before* the last line:
+What's different is everything before the last line. No `@mcp.tool` decorators
+multiplied by N. No pydantic I/O models per entity — the SDL is generated from
+SQLModel metadata. No `list_posts_with_author` — the agent asks for that shape
+directly. No `selectinload` — DataLoader batches for you.
 
-| What Path A makes you handle | What Path B1 doesn't |
-|---|---|
-| `@mcp.tool` decorator × N | automatic |
-| One pydantic I/O model per entity (schema is free, the model isn't) | GraphQL SDL generated from SQLModel metadata |
-| `list_posts_with_author` style nested tool + nested pydantic model | Plain GraphQL nested query |
-| `selectinload` to avoid N+1 | DataLoader batches automatically |
-| Tool count explosion as entities grow | Fixed at 3 tools |
-
-### What the agent sees
-
-Path A: the agent reads 7 tool descriptions on startup.
-
-Path B1: the agent reads:
+The agent now sees three tools instead of seven:
 
 ```
 - get_schema()           → { sdl }
@@ -277,8 +312,8 @@ Path B1: the agent reads:
 - graphql_mutation(...)  → { data }
 ```
 
-The agent calls `get_schema` on demand to learn capabilities, then issues one
-GraphQL query. Composed queries and nested fields resolve in a single round trip:
+It calls `get_schema` once to learn the shape, then writes GraphQL. The earlier
+scenario — *"posts with their author"* — collapses into one query:
 
 ```graphql
 {
@@ -294,20 +329,28 @@ GraphQL query. Composed queries and nested fields resolve in a single round trip
 }
 ```
 
-To do the same in Path A, the agent makes 3 tool calls (`get_user` →
-`list_posts_with_author` → manual assembly), or you pre-write a
-`get_user_with_posts_and_author_comments` tool — and then the next slightly
-different query needs yet another tool.
+One protocol round trip. The underlying SQL count is comparable to FastMCP's
+`selectinload` — both solve N+1 via batching. The difference is the agent got
+there with one tool call and a query string it wrote itself, instead of three
+tool calls or a pre-written `list_posts_with_posts_and_author_comments` glue
+tool.
+
+**An honest caveat on token cost.** `get_schema` returns the full SDL — its
+size scales with entity and field count, just like FastMCP's tool descriptions
+do. Simple mode doesn't break the linear schema-token curve; it relocates the
+cost from MCP tool descriptions to GraphQL SDL. The structural wins in B1 are
+field projection and nested resolution, not tool-count reduction. Path B2 is
+what actually breaks the curve.
 
 ---
 
-## Path B2: NexusX UseCase + 4-layer progressive disclosure (2 more minutes)
+## Path B2: NexusX UseCase — when you want business methods
 
 > Full code: [`nexusx_usecase.py`](./nexusx_usecase.py)
 
-When you want to expose **business methods** (not raw CRUD) — things like
-`list_users_with_post_counts` that carry derived fields — the UseCase pattern
-shines.
+Raw CRUD isn't always what you want to expose. Sometimes the right shape is a
+derived view — *"list users with their post counts"* — that doesn't map 1:1 to
+a row. That's where the UseCase pattern earns its keep.
 
 ```python
 from pydantic import BaseModel
@@ -367,28 +410,25 @@ mcp = create_use_case_graphql_mcp_server(
 )
 ```
 
-The MCP service now exposes 4 layered tools:
+Now MCP serves four tools — and this is where the structural difference actually
+shows up. The agent starts with `list_apps`, a tiny envelope that just says
+*what exists*. If it cares, it calls `describe_compose_schema(app)` for method
+names (no params yet, still small). When something looks useful, it calls
+`describe_compose_method(app, svc, method)` to get exactly that method's
+parameters, return type, and SDL fragment. Only then does it call
+`compose_query(app, query)` to actually run something.
 
-| Tool | Purpose | Response envelope |
-|---|---|---|
-| `list_apps()` | Discover available apps | tiny |
-| `describe_compose_schema(app)` | List service + method names (no params) | small |
-| `describe_compose_method(app, svc, method)` | Params + return type + SDL fragment for one method | medium |
-| `compose_query(app, query)` | Execute a GraphQL string | sized by the query |
+This is what *progressive disclosure* looks like baked into the protocol itself.
+FastMCP offers no equivalent — eager-load clients (Cursor today) put every tool
+description into context at startup. Recent Claude Code builds sidestep this
+via Tool Search (lazy per-call schema fetch), but that's a client-side
+optimization, not a protocol guarantee. NexusX lets the agent drill in from
+*"what's available?"* down to *"what does this method take?"*, paying token
+cost only for the layer it's actually at. The gap widens as entities and
+business methods multiply. Thirty-plus tools is normal in a FastMCP project;
+NexusX stays at four regardless.
 
-### This is the biggest structural difference vs FastMCP
-
-- **FastMCP is a flat tool wall** — the agent loads every tool description into
-  context at startup.
-- **NexusX is a progressive disclosure tree** — the agent checks `list_apps` to
-  decide whether to continue, then `describe_compose_schema` for method names,
-  then `describe_compose_method` for the exact schema it needs.
-
-The gap widens as entities and business methods multiply. 30+ tools is normal in
-a FastMCP project; the agent's context gets eaten by tool descriptions. NexusX
-stays at 4 tools regardless.
-
-And **the same `UserService` subclass mounts directly onto FastAPI**:
+And the same `UserService` mounts directly onto FastAPI:
 
 ```python
 from nexusx import create_use_case_router
@@ -399,166 +439,203 @@ router = create_use_case_router(
 # Attach to a FastAPI app — OpenAPI docs come for free.
 ```
 
-Write the business logic once; deliver to both MCP and REST. Path A would need to
-re-wrap every tool function as a FastAPI endpoint by hand.
+Write the business logic once; deliver to both MCP and REST. (FastMCP 3.0's
+`FastMCP.from_fastapi` bridge offers a similar co-existence story from the
+opposite direction — start with FastAPI, get MCP for free. The structural
+difference is that B2 makes this work *because* of the `UseCaseService`
+abstraction, where FastMCP relies on you already having FastAPI routes.)
 
 ---
 
-## Quantitative comparison
+## Putting them side by side
 
-*Columns are paradigms, not products. NexusX is the reference implementation for the GraphQL-based MCP columns; other implementations are surveyed [below](#other-implementations-of-graphql-based-mcp).*
+All three paths auto-generate `inputSchema` / `outputSchema` — that part isn't
+different. Where they diverge is boilerplate per entity, query shape, token
+cost, and REST co-existence.
 
-| Dimension | Flat-tool MCP (FastMCP) | GraphQL-based MCP (simple) | GraphQL-based MCP (UseCase) |
-|---|---|---|---|
-| inputSchema / outputSchema auto-generation | ✅ (from pydantic models) | ✅ (from SQLModel metadata → GraphQL SDL) | ✅ (from service method signatures → GraphQL SDL) |
-| Boilerplate per entity | N tool functions + N pydantic models | 0 lines (one `create_simple_mcp_server`) | 0 lines (one `create_use_case_graphql_mcp_server`) |
-| Nested relationship queries | Hand-written tool + nested model + `selectinload` | GraphQL field nesting, DataLoader auto | Business-method composition |
-| Tool-count growth | Linear (+N per entity) | Constant (fixed 3) | Constant (fixed 4) |
-| Schema loading at agent startup | All tool descriptions (more detail = more tokens) | 1 `get_schema` tool, drill-down on demand | 3-layer drill-down (apps → schema → method) |
-| Return-field projection (anti over-fetch) | ❌ tool returns the full pydantic model; agent can't pick fields | ✅ GraphQL field selection | ✅ GraphQL field selection |
-| Composed queries (multi-entity, one round trip) | Not supported | Native GraphQL | Native GraphQL |
-| REST API co-existence | pydantic models reusable, endpoints must be rewritten | Write FastAPI separately | `UseCaseService` mounts directly |
-| N+1 protection | Manual `selectinload` | DataLoader auto-batching | DataLoader auto-batching |
-| Tool safety annotations | ✅ `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` help the agent decide whether a call is safe | ❌ GraphQL schema has no equivalent | ❌ same |
-| MCP Resources (URI-addressable resources) | ✅ `@mcp.resource("config://...")` exposes config / files / docs | ❌ tools only | ❌ tools only |
-| MCP Prompts (predefined prompt templates) | ✅ `@mcp.prompt` gives the agent structured prompts | ❌ tools only | ❌ tools only |
+Path A charges N tools and N pydantic models per entity, charges a hand-written
+tool per nested-query shape, charges a manual `selectinload` per N+1 risk, and
+charges a full FastAPI rewrite for REST. Path B1 collapses most of that: zero
+boilerplate beyond the business code, nested queries become field selection,
+DataLoader handles N+1 automatically. Path B2 adds progressive disclosure on
+top — four fixed tools, sub-linear token cost as the agent drills in.
 
----
+Field projection exists in B1 and B2 because GraphQL natively has it. Path A
+can't offer it: `tools/call` returns the whole pydantic model whether the agent
+wants two fields or twelve, and the waste scales with model width.
 
-## Other implementations of GraphQL-based MCP
+Composed queries in Path A need either multiple round trips or a pre-written
+glue tool. In B1 and B2 they're native GraphQL — one protocol round trip, with
+comparable SQL count underneath.
 
-NexusX isn't the only implementation of this paradigm. The core idea — *let the agent write GraphQL queries instead of calling N flat tools* — can be realized with several stacks. They trade off freedom, boilerplate, and ecosystem differently:
-
-- **Strawberry + FastMCP** (closest Python alternative). Strawberry provides a Python-native, type-driven GraphQL schema; you wrap `schema.execute_async` behind FastMCP's `graphql_query` / `graphql_mutation` tools. More freedom than NexusX (custom schema shape, supports Federation / Subscriptions), but you lose the opinionated style constraint and write DataLoader by hand.
-- **Apollo Server + MCP bridge** (Node ecosystem). Apollo exposes a GraphQL HTTP endpoint; a thin MCP server (Python or Node) forwards queries. Good for projects already invested in Apollo, but adds a network hop (MCP → HTTP → Apollo → DB) and deployment complexity.
-- **Ariadne + FastMCP** (schema-first). Write SDL first as a contract, then bind resolvers. Suits teams that want SDL as a frontend-backend contract, but per-field resolver boilerplate is high — nothing is auto-generated from ORM metadata.
-- **Raw `graphql-core` + FastMCP** (lowest layer). Build schema programmatically with graphql-core, wrap with FastMCP. Maximum control, maximum boilerplate. Best for experiments or framework building.
-
-**Paradigm vs. implementation**: GraphQL-based MCP's core insight is structural — the agent should query data, not invoke per-shape tools. NexusX is an opinionated variant (SQLModel as single source of truth + two forced schema styles); other implementations keep more freedom but lose the constraint that prevents schema drift.
+REST co-existence is where the field has leveled. FastMCP 3.0's
+`FastMCP.from_fastapi(app)` bridges from the REST side — start with FastAPI,
+inherit MCP tools for free. NexusX's `UseCaseService` bridges from the MCP
+side — start with service methods, mount to both. Either gets you one
+codebase, two faces. B2 still has a structural edge in *progressive
+disclosure* (above), but REST isn't where it shows up anymore.
 
 ---
 
-## Design philosophy: AI agent as yet another frontend client
+## Why this works: the agent is another frontend client
 
-Look back at FastMCP's pain points in the comparison table — over-fetch, no field
-selection, no composed queries, schema tokens growing linearly with tool count.
-Frontend engineers will find these very familiar. This is exactly what REST + BFF
-teams argued about daily around 2015. GraphQL was invented to solve precisely
-these: field selection, nested queries, strongly-typed contracts, composition on
-demand.
+> This section is design opinion, not comparison. It's labeled as such because
+> analogy-driven framing shouldn't be read as objective evidence.
 
-Agents are now hitting the same wall, just renamed to "the tools/list token budget."
+Step back and look at Path A's pain points again. Over-fetch. No field
+selection. No composed queries. Schema tokens growing linearly with tool count.
+Frontend engineers will find these very familiar — this is exactly what REST +
+BFF teams argued about daily around 2015. GraphQL was invented to solve
+precisely these problems: field selection, nested queries, strongly-typed
+contracts, composition on demand.
 
-NexusX isn't "inventing a new MCP framework." It treats **SQLModel entities as the
+Agents are now hitting a similar wall, just renamed to *"the tools/list token
+budget."*
+
+NexusX isn't inventing a new MCP framework. It treats SQLModel entities as the
 single source of truth for a GraphQL schema, and lets the agent consume every
-capability via GraphQL-over-MCP.** What makes one line of `create_simple_mcp_server`
-work is this inheritance: the agent doesn't get "a new protocol designed for AI,"
-it gets "a protocol designed for frontends, validated by billions of production
-requests."
+capability via GraphQL-over-MCP. What makes one line of
+`create_simple_mcp_server` work is that inheritance: the agent doesn't get *"a
+new protocol designed for AI"*, it gets *"a protocol designed for frontends."*
 
-This abstraction pays out at three levels:
+This pays out at three levels. The agent's capability ceiling goes up —
+composed queries, field projection, nested relationships in one round trip are
+GraphQL dividends inherited for free. Existing SQLModel projects adopt it
+almost for free — you already have entities, a handful of `@query` decorators
+gets you MCP. And `UseCaseService` makes REST free alongside MCP, because the
+same code mounts both places.
 
-1. **The agent's capability ceiling goes up.** Composed queries, field projection,
-   nested relationships in one round trip — all GraphQL dividends the agent now
-   inherits for free.
-2. **Existing SQLModel projects adopt it almost for free.** You already have
-   entities; a handful of `@query` decorators gets you MCP. Path A would require
-   rewriting the entire tool layer.
-3. **`UseCaseService` makes REST free alongside MCP.** Write the business logic
-   once; deliver to both agent and frontend.
+The load-bearing assumption is that *data has structure and relationships are
+traversable*. If the agent's job isn't querying a database — it's sending
+emails, resizing images, calling external APIs — GraphQL abstraction is a
+hindrance, and FastMCP's *tool = function* model fits better.
 
-The load-bearing assumption: **data has structure and relationships are
-traversable.** If the agent's job isn't querying a database — it's sending emails,
-resizing images, calling external APIs — GraphQL abstraction is a hindrance and
-FastMCP's "tool = function" model fits better. The next section expands on the
-boundaries.
-
----
-
-## Opinionated GraphQL: trading freedom for predictability
-
-GraphQL itself has a long-standing critique: **too flexible, not enough constraint.**
-
-The community has never agreed on schema style. Apollo pushes schema-first +
-business-aligned types. Early Facebook organized schemas around UI components.
-Most teams end up mapping ORM models directly to GraphQL types. Three styles in
-the same schema, and it starts to rot. The root cause: GraphQL specifies
-**syntax**, not **style** — "can't find the best practice" isn't lack of effort,
-it's the protocol giving no constraints.
-
-NexusX adds an opinionated framework constraint at this layer. Two API paths,
-sharply separated:
-
-- **B1 (simple mode) = strictly model-oriented.** Schema is auto-generated from
-  SQLModel metadata; you can't sneak in ad-hoc fields. It's "automated ORM →
-  GraphQL mapping," but because the framework generates it, there's no "should
-  the team do this?" debate.
-- **B2 (UseCase mode) = strictly business-oriented.** Schema must hang off
-  `UseCaseService` methods, organized by business use case. No business method,
-  no field. This turns the business-aligned style championed by Facebook / Apollo
-  into **the only code path.**
-
-**Users can't drift** — it's not "find the best practice," it's "the framework
-already picked one." GraphQL's query capabilities (field selection, nesting,
-composition) are preserved at the protocol layer, but schema-design freedom is
-removed. This is the opposite direction from Strawberry / Ariadne, which hand
-you a GraphQL endpoint and let you design the schema yourself.
-
-One sentence: **NexusX isn't a better GraphQL framework, it's a more restrictive
-one — and the restriction is exactly how it solves "can't find best practices."**
-
-This also draws its applicability boundary: if you need schema-design freedom
-(multi-team collaboration, complex federated schemas, cross-domain type
-coordination), NexusX is a hindrance. The next section expands.
+**Where the analogy breaks.** Frontend developers pre-know the query shape;
+agents generate query shapes at runtime. Some of GraphQL's production-grade
+tooling — persisted queries, operation whitelists, frontend-team-maintained
+resolvers — depends on that pre-known shape and doesn't transfer cleanly to
+agent traffic. The structural wins transfer; the operational tooling doesn't.
 
 ---
 
-## Honest boundaries
+## The opinionated layer: constraints over freedom
 
-NexusX isn't the right fit for every scenario.
+GraphQL's long-standing critique is that it specifies *syntax*, not *style*.
+The community has never agreed on schema style: Apollo pushes schema-first +
+business-aligned types, early Facebook organized schemas around UI components,
+most teams end up mapping ORM models directly to GraphQL types. Three styles in
+the same schema and it starts to rot. *"Can't find the best practice"* isn't
+lack of effort — it's the protocol giving no constraints.
 
-**Use NexusX when**:
+NexusX removes the choice. Two API paths, sharply separated.
 
-- The project is already on SQLModel / SQLAlchemy.
-- You need to expose database entities or business methods to an AI agent.
-- REST and MCP both need to be delivered (→ UseCase mode).
-- Many entities, complex relationships, frequent nested queries.
+B1 (Simple mode) is strictly model-oriented. The schema is auto-generated from
+SQLModel metadata; you can't sneak in ad-hoc fields. It's automated ORM →
+GraphQL mapping, but because the framework generates it, there's no *"should
+the team do this?"* debate.
 
-**Keep using FastMCP when**:
+B2 (UseCase mode) is strictly business-oriented. The schema hangs off
+`UseCaseService` methods, organized by business use case — no method, no field.
+This turns the business-aligned style championed by Facebook and Apollo into
+*the only code path*.
 
-- MCP tools are stateless functions — `send_email(to, subject)`,
-  `resize_image(url, width)`, unrelated to a database.
-- Tool count is small (< 5) and won't grow.
-- You're outside the Python ecosystem (FastMCP has TypeScript / Go versions).
-- You need precise control over each tool's description / argument order, and
-  GraphQL abstraction is in the way.
-- **You need the full MCP triangle** (tools + resources + prompts). FastMCP is a
-  complete MCP server framework; NexusX focuses on exposing SQLModel / business
-  methods as tools (GraphQL-over-MCP) and doesn't cover resources or prompts.
+Users can't drift because there's nothing to drift from. GraphQL's query
+capabilities — field selection, nesting, composition — are preserved at the
+protocol layer, but schema-design freedom is removed. That's the opposite
+direction from Strawberry or Ariadne, which hand you a GraphQL endpoint and let
+you design the schema yourself.
 
-### FastMCP advantages outside this comparison's scope
+NexusX isn't a better GraphQL framework. It's a more restrictive one — and the
+restriction is exactly how it solves *"can't find best practices."*
 
-For fairness, these are real FastMCP capabilities that are unrelated (or weakly
-related) to the core "expose SQLModel entities" scenario:
+---
 
-- **Tool annotations**: `readOnlyHint` / `destructiveHint` / `idempotentHint` /
-  `openWorldHint` — hints the agent uses to judge whether a call is safe ("read-only
-  tool, safe to try"). GraphQL schemas have no equivalent.
-- **MCP Resources**: `@mcp.resource("config://...")` exposes URI-addressable
-  resources (configs, docs, files) — a different access pattern from tools.
-- **MCP Prompts**: `@mcp.prompt` defines reusable prompt templates the agent can
-  consume as structured prompts.
-- **Context injection + Lifespan**: FastMCP tools can inject `Context` (progress,
-  logging, state); the server has lifespan hooks for startup/shutdown.
-- **Server composition**: `mcp.import_server("prefix", other_mcp)` combines
-  multiple independent servers.
-- **In-process / direct call**: FastMCP tools can be invoked as plain Python
-  functions (via `Client`, skipping the protocol layer) — handy for integration
-  tests.
-- **Auth integration**: FastMCP has built-in OAuth / bearer-token handling.
+## What GraphQL-over-MCP costs you
 
-If your needs go beyond "expose the database to an agent" — say, mixing tools +
-resources + prompts — FastMCP is the better foundation.
+The comparison above leans GraphQL-favorable on structural dimensions. For
+balance, these are the real costs of *agent-generated GraphQL queries* that
+flat-tool MCP doesn't pay.
+
+**Query depth becomes a real attack surface — with mature countermeasures.**
+GraphQL services traditionally need cost analysis or depth limits
+(`user { posts { author { posts { ... }}}}}`) to prevent pathological queries.
+With an agent writing queries at runtime, depth is unpredictable. The
+countermeasures are well-established (depth limiting, selection-set bounding,
+cost analysis), and the GraphQL Foundation chartered an AI Working Group in
+October 2025 to tackle exactly this class of risk for LLM-driven traffic.
+Flat-tool MCP doesn't have an equivalent because each tool's shape is fixed
+at design time — but the cost on the GraphQL side is that the server has to
+actively enforce these limits rather than passively inherit safety from
+fixed tool shapes.
+
+**Error messages get harder to self-correct.** FastMCP + pydantic produces
+field-level validation errors (*"`email`: missing required field"*). GraphQL
+parse or validation errors are often structural (*"Expected Name, found `}`"*)
+and harder for the agent to recover from.
+
+**Persisted-query tooling needs rethinking, not abandonment.** Production
+GraphQL deployments usually cache and rate-limit via persisted queries,
+which depend on a fixed query set. Agents generate fresh query strings every
+call, so the pure-persisted-query model doesn't transfer. The
+community-recommended replacement is a hybrid: dynamic query generation
+plus an operation whitelist that gates runtime queries against a known-good
+set (Apollo and others document this pattern for agent traffic). The burden
+shifts to the server side; it doesn't disappear.
+
+**Schema changes have wider blast radius.** A renamed GraphQL field breaks
+every agent query that referenced it. A renamed flat tool only breaks callers
+of that one tool. Field-level coupling makes GraphQL schemas more fragile
+under agent-driven traffic.
+
+None of this negates the structural wins — field projection, progressive
+disclosure, nested composition. But it's the price of moving the query shape
+from design time to runtime.
+
+### Where NexusX fits, where FastMCP fits
+
+Reach for NexusX when the project is already on SQLModel / SQLAlchemy, when you
+need to expose database entities or business methods to an agent, when REST and
+MCP both need to be delivered (UseCase mode), or when entities are many and
+relationships complex.
+
+Keep using FastMCP when MCP tools are stateless functions (`send_email`,
+`resize_image`) unrelated to a database, when tool count is small and stable,
+when you're outside the Python ecosystem, when you need precise control over
+each tool's description and argument order, or — importantly — when you need
+the **full MCP triangle** of tools + resources + prompts.
+
+FastMCP has real capabilities NexusX doesn't try to cover. Tool annotations
+(`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) let
+the agent judge whether a call is safe. MCP Resources
+(`@mcp.resource("config://...")`) expose URI-addressable configs, docs, or
+files. MCP Prompts (`@mcp.prompt`) define reusable prompt templates. There's
+`Context` injection for progress and logging, lifespan hooks, server
+composition, in-process direct calls for tests, and built-in OAuth /
+bearer-token auth. If your needs go beyond *"expose the database to an agent"*
+— say, mixing tools with resources and prompts — FastMCP is the better
+foundation.
+
+---
+
+## Other GraphQL-based MCP implementations
+
+NexusX isn't the only realization of this paradigm. The core insight — *let
+the agent write GraphQL queries instead of calling N flat tools* — works with
+several stacks.
+
+**Strawberry + FastMCP** is the closest Python alternative: type-driven schema,
+full Federation / Subscription support, but you write DataLoader by hand and
+lose the opinionated constraint. **Apollo Server + a thin MCP bridge** suits
+Node shops already invested in Apollo, at the cost of an extra network hop and
+deployment complexity. **Ariadne + FastMCP** is schema-first, good for teams
+that want SDL as a contract, but per-field resolver boilerplate is high.
+**Raw `graphql-core` + FastMCP** gives maximum control for maximum boilerplate
+— best for experiments or framework building.
+
+The paradigm is bigger than any one implementation. NexusX is the opinionated
+variant — SQLModel as single source of truth, two forced schema styles. Other
+implementations keep more freedom but lose the constraint that prevents schema
+drift.
 
 ---
 
@@ -606,9 +683,9 @@ mcp.run()                                       # stdio, for Claude Desktop / Cu
 }
 ```
 
-Restart Claude Desktop and ask in chat: "list all users with their most recent
-post." The agent will discover the schema, construct the GraphQL query, and fetch
-the result in one round trip.
+Restart Claude Desktop and ask in chat: *"list all users with their most recent
+post."* The agent will discover the schema, construct the GraphQL query, and
+fetch the result in one round trip.
 
 ---
 
