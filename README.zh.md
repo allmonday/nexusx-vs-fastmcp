@@ -361,9 +361,7 @@ NexusX 不是"发明一个新 MCP 框架"。它把 SQLModel 实体当作 GraphQL
 
 这个抽象的价值有三层。第一，agent 的能力上限被抬高了——组合查询、字段投影、嵌套关系一次往返，这些是 GraphQL 的红利，agent 现在白捡。第二，存量 SQLModel 项目几乎免费接入——本来就有 entity，加几个 `@query` 装饰器就有 MCP。第三，`UseCaseService` 让 REST 跟 MCP 一起免费——同一份代码挂两面。
 
-前提是：数据有结构、关系可遍历。如果 agent 要做的不是查数据库，而是发邮件、改图片、调外部 API，那 GraphQL 的抽象反而是阻碍，FastMCP 那种"工具 = 函数"的模型更合适。
-
-这里有一个类比的边界要注意。前端开发者预先知道查询形状，agent 是在运行时生成查询形状。GraphQL 一些生产级工具——persisted query、operation whitelist、前端团队维护的 resolver——依赖的是前者，迁移到 agent 流量会失灵。结构性收益可以迁移，运营层工具不能。
+前提是：数据有结构、关系可遍历。如果 agent 要做的不是查数据库，而是发邮件、改图片、调外部 API，那 GraphQL 的抽象反而是阻碍，FastMCP 那种“工具 = 函数”的模型更合适。
 
 ## 少即是多：用约束换可预测
 

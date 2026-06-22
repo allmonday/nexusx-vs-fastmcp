@@ -506,12 +506,6 @@ traversable*. If the agent's job isn't querying a database — it's sending
 emails, resizing images, calling external APIs — GraphQL abstraction is a
 hindrance, and FastMCP's *tool = function* model fits better.
 
-**Where the analogy breaks.** Frontend developers pre-know the query shape;
-agents generate query shapes at runtime. Some of GraphQL's production-grade
-tooling — persisted queries, operation whitelists, frontend-team-maintained
-resolvers — depends on that pre-known shape and doesn't transfer cleanly to
-agent traffic. The structural wins transfer; the operational tooling doesn't.
-
 ## The opinionated layer: constraints over freedom
 
 GraphQL's long-standing critique is that it specifies *syntax*, not *style*.
