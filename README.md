@@ -31,6 +31,12 @@ GraphQL's full query power; the developer gets the simplicity of *agent
 writes one query, fetches everything in one round trip* — not the burden of
 *yet another GraphQL service to maintain*.
 
+One caveat worth flagging. NexusX's GraphQL is not the full spec. Features
+designed for human developers — aliases, fragments — are stripped out. The
+agent never writes them, and dropping them keeps the schema smaller and the
+token cost lower. In other words, the agent gets a GraphQL trimmed for its
+needs, not the full stack a frontend team would use.
+
 Picture a concrete task: an AI agent needs to answer *"show me Alice's posts
 and who wrote them."* Under flat-tool MCP — the style [FastMCP](https://github.com/jlowin/fastmcp)
 popularized — that's three tool calls plus a hand-written glue function the

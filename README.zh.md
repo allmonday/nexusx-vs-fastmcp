@@ -14,6 +14,8 @@
 
 GraphQL-based MCP 就是把这套基础设施借给 agent 用。但是——这里很关键——你不用自己起一个 GraphQL server，不用手写一堆 resolver，也不用扛 Apollo 或者 Strawberry 那一套运维。开发者只要把数据库模型或者业务方法声明成 GraphQL schema，框架会自动把这个 schema 包成 MCP 工具交给 agent。agent 拿到的是 GraphQL 的全部查询能力；开发者拿到的是"一条查询、一次往返拿完"的简洁，而不是"再多维护一个 GraphQL 服务"的负担。
 
+这里要补一句。NexusX 用的 GraphQL 不是完整规范。alias（字段别名）、fragment（查询片段）这些为人类开发者设计的特性，agent 写查询用不上，都被砍掉了。schema 因此更小、更省 token。换句话说，agent 拿到的是为它裁剪过的 GraphQL，不是前端团队那一整套。
+
 我想用一个最具体的任务来说明。假设 agent 要回答："列出 Alice 的 post 及其作者"。在 flat-tool MCP（FastMCP 推广的那种风格）里，这件事要三次工具调用，外加一个事先手写好的胶水工具。在 GraphQL-based MCP 里，这就是一条 agent 自己写出来的查询。
 
 这个仓库把两种范式并排跑给你看。同一份 User 加 Post 实体，同一份种子数据，三个完整的 server 实现。
