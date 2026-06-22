@@ -568,6 +568,17 @@ at design time — but the cost on the GraphQL side is that the server has to
 actively enforce these limits rather than passively inherit safety from
 fixed tool shapes.
 
+**B2 carries materially less risk here.** Path B2's schema doesn't expose the
+ORM relationship graph directly — it hangs off DTOs returned by
+`UseCaseService` methods. Those DTOs are flat pydantic models; they don't
+naturally form the `User.posts` ↔ `Post.author` back-reference cycles that
+ORM relationships do. If you want nesting, you design it explicitly (e.g.,
+`PostSummary.author: UserSummary`) — one-directional, no cycles. In other
+words, B2 hands the agent **a unidirectional tree, not a cyclic graph** —
+structurally, there's no entry point for `posts.author.posts.author...`
+depth explosion. The trade-off is losing B1's "arbitrary nesting" query
+power: if you need nesting, you write a composed method yourself.
+
 **Error messages get harder to self-correct.** FastMCP + pydantic produces
 field-level validation errors (*"`email`: missing required field"*). GraphQL
 parse or validation errors are often structural (*"Expected Name, found `}`"*)

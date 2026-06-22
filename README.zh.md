@@ -393,6 +393,8 @@ B2（UseCase 模式）严格面向 business。schema 必须挂在 `UseCaseServic
 
 **查询深度变成真实攻击面——但有成熟对策。** GraphQL 服务传统上需要 cost analysis 或深度限制（`user { posts { author { posts { ... }}}}}`）来防止病态查询。Agent 运行时生成查询，深度不可预测。对策是现成的（depth limiting、selection-set bounding、cost analysis），GraphQL Foundation 也在 2025 年 10 月专门成立了 AI Working Group 来处理 LLM 流量这类风险。扁平 tool MCP 没有等价问题，因为每个工具的形状在设计时就固定了——但 GraphQL 这边的代价是，server 要主动执行这些限制，而不是从固定工具形状里被动继承安全。
 
+**B2 在这一项上风险显著更低。** 路径 B2 的 schema 不直接暴露 ORM 关系图，而是挂在 `UseCaseService` 方法返回的 DTO 上。DTO 是扁平的 pydantic 模型，不会像 ORM 关系那样自然形成 `User.posts` ↔ `Post.author` 这种双向回引——你要嵌套就显式设计（比如 `PostSummary.author: UserSummary`），单向、不循环。换句话说，B2 给 agent 的是**一棵单向树、不是循环图**，结构上就没有 `posts.author.posts.author...` 这种深度爆炸的入口。代价是损失了 B1 那种"任意嵌套"的查询能力——要嵌套就得自己写组合方法。
+
 **错误信息更难自纠。** FastMCP + pydantic 给出字段级校验错误（"`email`：缺少必填字段"）。GraphQL 的 parse / validation 错误常常是结构性的（"Expected Name, found `}`"），agent 更难从中恢复。
 
 **persisted query 不是失效，是要重新设计。** 生产级 GraphQL 部署通常靠 persisted query 做缓存和限流——但这依赖固定的查询集合。Agent 每次都生成新的查询字符串，所以纯 persisted query 模型不适用。社区推荐的替代方案是混合模式：动态生成查询 + 一个 operation whitelist，运行时把查询对已知良品集合做门禁（Apollo 等都有针对 agent 流量的文档）。负担转移到服务端，但没有消失。
