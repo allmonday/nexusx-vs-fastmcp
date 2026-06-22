@@ -1,8 +1,8 @@
 """Path B2: NexusX UseCase MCP server with 4-layer progressive disclosure.
 
-Business methods live on a ``UseCaseService`` subclass — plain ``async classmethod``
-functions. ``create_use_case_graphql_mcp_server`` derives a GraphQL schema from the
-service signatures and exposes it via 4 MCP tools:
+Business methods live on a ``UseCaseService`` subclass — ``@query`` / ``@mutation``
+decorated async functions. ``create_use_case_graphql_mcp_server`` derives a GraphQL
+schema from the service signatures and exposes it via 4 MCP tools:
 
     - list_apps()                              → discover apps
     - describe_compose_schema(app)             → service + method names (compact)
@@ -21,15 +21,19 @@ import asyncio
 import sys
 from typing import Optional
 
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import Field, Relationship, SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nexusx import (
+    DefineSubset,
+    ErManager,
+    SubsetConfig,
     UseCaseAppConfig,
     UseCaseService,
+    build_dto_select,
     create_use_case_graphql_mcp_server,
+    query,
 )
 
 DATABASE_URL = "sqlite+aiosqlite:///./blog_nexusx_usecase.db"
@@ -58,30 +62,37 @@ class Post(SQLModel, table=True):
 # ──────────────────────────── DTOs ────────────────────────────
 
 
-class UserSummary(BaseModel):
-    id: int
-    name: str
-    email: str
+class PostSummary(DefineSubset):
+    __subset__ = SubsetConfig(kls=Post, fields=["id", "title", "author_id"])
 
 
-class UserWithPostCount(BaseModel):
+class UserSummary(DefineSubset):
+    __subset__ = SubsetConfig(kls=User, fields=["id", "name", "email"])
+
+
+class UserWithPostCount(DefineSubset):
     """Derived view — business-level shape, not a 1:1 row mapping."""
 
-    id: int
-    name: str
-    post_count: int
+    __subset__ = SubsetConfig(kls=User, fields=["id", "name"])
+
+    posts: list[PostSummary] = []
+    post_count: int = 0
+
+    def post_post_count(self):
+        return len(self.posts)
 
 
-class PostSummary(BaseModel):
-    id: int
-    title: str
-    author_id: int
+class PostWithAuthor(DefineSubset):
+    __subset__ = SubsetConfig(kls=Post, fields=["id", "title", "author_id"])
+
+    author: Optional[UserSummary] = None
 
 
-class PostWithAuthor(BaseModel):
-    id: int
-    title: str
-    author: UserSummary
+# ──────────────────────────── ErManager ────────────────────────────
+
+
+er = ErManager(entities=[User, Post], session_factory=async_session)
+Resolver = er.create_resolver()
 
 
 # ──────────────────────────── Services ────────────────────────────
@@ -90,66 +101,55 @@ class PostWithAuthor(BaseModel):
 class UserService(UseCaseService):
     """User operations."""
 
-    @classmethod
+    @query
     async def list_users(cls) -> list[UserSummary]:
         """List all users."""
+        stmt = build_dto_select(UserSummary)
         async with async_session() as s:
-            rows = (await s.exec(select(User))).all()
-        return [UserSummary(id=u.id, name=u.name, email=u.email) for u in rows]
+            rows = (await s.exec(stmt)).all()
+        dtos = [UserSummary(**dict(r._mapping)) for r in rows]
+        return await Resolver().resolve(dtos)
 
-    @classmethod
+    @query
     async def get_user(cls, user_id: int) -> Optional[UserSummary]:
         """Get a user by ID."""
+        stmt = build_dto_select(UserSummary, where=User.id == user_id)
         async with async_session() as s:
-            u = await s.get(User, user_id)
-        if not u:
+            rows = (await s.exec(stmt)).all()
+        if not rows:
             return None
-        return UserSummary(id=u.id, name=u.name, email=u.email)
+        return await Resolver().resolve(UserSummary(**dict(rows[0]._mapping)))
 
-    @classmethod
+    @query
     async def list_users_with_post_counts(cls) -> list[UserWithPostCount]:
         """List users with their post counts (derived)."""
-        from sqlalchemy import func
-
+        stmt = build_dto_select(UserWithPostCount)
         async with async_session() as s:
-            stmt = (
-                select(User.id, User.name, func.count(Post.id).label("post_count"))
-                .join(Post, Post.author_id == User.id, isouter=True)
-                .group_by(User.id)
-            )
             rows = (await s.exec(stmt)).all()
-        return [
-            UserWithPostCount(id=r.id, name=r.name, post_count=r.post_count)
-            for r in rows
-        ]
+        dtos = [UserWithPostCount(**dict(r._mapping)) for r in rows]
+        return await Resolver().resolve(dtos)
 
 
 class PostService(UseCaseService):
     """Post operations."""
 
-    @classmethod
+    @query
     async def list_posts(cls) -> list[PostSummary]:
         """List all posts."""
+        stmt = build_dto_select(PostSummary)
         async with async_session() as s:
-            rows = (await s.exec(select(Post))).all()
-        return [PostSummary(id=p.id, title=p.title, author_id=p.author_id) for p in rows]
-
-    @classmethod
-    async def list_posts_with_author(cls) -> list[PostWithAuthor]:
-        """List posts with their author — composed in the service layer."""
-        from sqlalchemy.orm import selectinload
-
-        async with async_session() as s:
-            stmt = select(Post).options(selectinload(Post.author))
             rows = (await s.exec(stmt)).all()
-        return [
-            PostWithAuthor(
-                id=p.id,
-                title=p.title,
-                author=UserSummary(id=p.author.id, name=p.author.name, email=p.author.email),
-            )
-            for p in rows
-        ]
+        dtos = [PostSummary(**dict(r._mapping)) for r in rows]
+        return await Resolver().resolve(dtos)
+
+    @query
+    async def list_posts_with_author(cls) -> list[PostWithAuthor]:
+        """List posts with their author — auto-loaded by the Resolver."""
+        stmt = build_dto_select(PostWithAuthor)
+        async with async_session() as s:
+            rows = (await s.exec(stmt)).all()
+        dtos = [PostWithAuthor(**dict(r._mapping)) for r in rows]
+        return await Resolver().resolve(dtos)
 
 
 # ──────────────────────────── MCP server ────────────────────────────
