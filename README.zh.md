@@ -49,8 +49,6 @@ python nexusx_usecase.py --http
 
 stdio 模式可以接入 Claude Desktop 或者 Cursor。HTTP 模式可以用 curl 或者浏览器端 MCP 客户端来调试。
 
----
-
 ## 我们要解决的问题
 
 两个 SQLModel 实体，一对多关系，一个需要在这两张表之间来回走的 agent。
@@ -72,8 +70,6 @@ class Post(SQLModel, table=True):
 ```
 
 种子数据很简单：2 个 user（Alice、Bob），3 个 post。下面所有的内容都围绕一个问题展开——每种范式如何让 agent 在这张小图上来回走，你又要为此写多少代码。
-
----
 
 ## 路径 A：手写 FastMCP
 
@@ -176,8 +172,6 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
 
 这些都不是 FastMCP 的 bug。是"工具 = 函数"这个契约形状，撞上了"数据 = 图"这个问题。问题长什么样，痛就长什么样。
 
----
-
 ## 路径 B1：NexusX Simple
 
 > 完整代码见 [`nexusx_simple.py`](./nexusx_simple.py)
@@ -262,8 +256,6 @@ agent 现在看到的是 3 个工具，不是 7 个：
 
 这里我要诚实说一下 token 成本。`get_schema` 返回的是完整 SDL，大小随实体和字段数线性增长，跟 FastMCP 的工具描述增长同阶。Simple 模式并没有打破"schema token 线性增长"这条曲线，它只是把成本从 MCP 工具描述挪到了 GraphQL SDL。B1 真正的结构性收益是字段投影和嵌套解析，不是工具数减少。路径 B2 才是真正打破曲线的方案。
 
----
-
 ## 路径 B2：NexusX UseCase——要暴露业务方法时
 
 > 完整代码见 [`nexusx_usecase.py`](./nexusx_usecase.py)
@@ -345,8 +337,6 @@ router = create_use_case_router(
 
 业务逻辑写一遍，MCP 和 REST 两面交付。（FastMCP 3.0 的 `FastMCP.from_fastapi` 桥从相反方向解决了同样的共存问题——先有 FastAPI，免费拿到 MCP。结构性差异是：B2 之所以能做到，*是因为* `UseCaseService` 这个抽象；FastMCP 则要求你底下已经有 FastAPI 路由。）
 
----
-
 ## 三条路径放在一起
 
 三条路径都自动生成 `inputSchema` / `outputSchema`，这一块没差异。差异在每个实体的样板、查询形状、token 成本、REST 共存这几项。
@@ -358,8 +348,6 @@ router = create_use_case_router(
 组合查询在路径 A 里要么多次往返、要么预先写胶水工具。在 B1 和 B2 里是原生 GraphQL——一次协议往返，底层 SQL 次数相当。
 
 REST 共存这一项上，差距已经抹平。FastMCP 3.0 的 `FastMCP.from_fastapi(app)` 从 REST 这一侧搭桥，先有 FastAPI，免费拿到 MCP 工具。NexusX 的 `UseCaseService` 从 MCP 这一侧搭桥，先有 service 方法，同时挂两边。两边都能做到一份代码、两面交付。B2 真正的结构性优势在渐进披露（上面那条），REST 不再是它显身手的地方。
-
----
 
 ## 为什么这样做是有效的
 
@@ -377,8 +365,6 @@ NexusX 不是"发明一个新 MCP 框架"。它把 SQLModel 实体当作 GraphQL
 
 这里有一个类比的边界要注意。前端开发者预先知道查询形状，agent 是在运行时生成查询形状。GraphQL 一些生产级工具——persisted query、operation whitelist、前端团队维护的 resolver——依赖的是前者，迁移到 agent 流量会失灵。结构性收益可以迁移，运营层工具不能。
 
----
-
 ## 少即是多：用约束换可预测
 
 GraphQL 长期被诟病的一点是：它规定了语法，没规定风格。社区里推 schema 风格的声音从来不统一——Apollo 推 schema-first 加 business-aligned types，Facebook 早期按 UI 组件组织，绝大多数团队最后却把 ORM 模型直接映射成 GraphQL type。三种风格混用，schema 就开始烂。"找不到最佳实践"不是没努力，是协议没给约束。
@@ -392,8 +378,6 @@ B2（UseCase 模式）严格面向 business。schema 必须挂在 `UseCaseServic
 用户没机会走偏。不是"找最佳实践"，是"框架替你选好了"。GraphQL 协议层仍然保留查询能力（字段选择、嵌套、组合），但 schema 设计自由度被剥夺了。这跟 Strawberry / Ariadne 那种"给你一个 GraphQL endpoint、schema 自己设计"是相反方向。
 
 一句话：NexusX 不是更好的 GraphQL 框架，是更不自由的 GraphQL 框架——而不自由恰恰是它解决"找不到最佳实践"的方式。
-
----
 
 ## 代价是什么
 
@@ -419,8 +403,6 @@ B2（UseCase 模式）严格面向 business。schema 必须挂在 `UseCaseServic
 
 FastMCP 有一些真实存在、但 NexusX 不打算覆盖的能力。Tool annotations（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`）让 agent 判断调用是否安全。MCP Resources（`@mcp.resource("config://...")`）暴露 URI 寻址的配置、文档、文件。MCP Prompts（`@mcp.prompt`）定义可复用的提示模板。还有 `Context` 注入（progress、logging、state）、lifespan hook、server composition、in-process direct call（写测试方便）、内置 OAuth 加 bearer token auth。如果你的需求超出"把数据库暴露给 agent"——比如要混合 tools 加 resources 加 prompts——FastMCP 是更合适的基础。
 
----
-
 ## 其他 GraphQL-based MCP 实现
 
 NexusX 不是这种范式的唯一实现。核心洞察——让 agent 用 GraphQL 查询数据，而不是调 N 个扁平工具——可以用多种技术栈落地。
@@ -428,8 +410,6 @@ NexusX 不是这种范式的唯一实现。核心洞察——让 agent 用 Graph
 Strawberry 加 FastMCP 是最接近的 Python 替代：类型驱动的 schema，支持 Federation 和 Subscription，但 DataLoader 要自己写，也失去了 opinionated 风格约束。Apollo Server 加轻量 MCP bridge 适合已经投入 Apollo 的 Node 项目，代价是多一层网络 hop 和部署复杂度。Ariadne 加 FastMCP 是 schema-first，适合想要 SDL 作契约的团队，但每个字段都要 resolver，样板多。裸 `graphql-core` 加 FastMCP 是最底层，控制力最强、样板也最多——适合实验或框架开发。
 
 范式比任何单个实现都大。NexusX 是 opinionated 变体——SQLModel 单一真相源加两条强制风格路径。其他实现保留更多自由度，但失去了防止 schema 漂移的约束。
-
----
 
 ## 五分钟清单
 
@@ -477,8 +457,6 @@ mcp.run()                                       # stdio，给 Claude Desktop / C
 
 重启 Claude Desktop，对话里直接问"列出所有用户及其最近一篇 post"——agent 会自动发现 schema、构造 GraphQL 查询、一次往返拿到结果。
 
----
-
 ## 项目结构
 
 ```
@@ -493,8 +471,6 @@ nexusx-vs-fastmcp/
 ```
 
 三个 server 用独立的 sqlite 文件（`blog_fastmcp.db` / `blog_nexusx_simple.db` / `blog_nexusx_usecase.db`），互不干扰，可以同时跑。
-
----
 
 ## 进一步阅读
 

@@ -80,8 +80,6 @@ python nexusx_usecase.py --http
 stdio plugs into Claude Desktop / Cursor. HTTP is handy for `curl` probes or
 browser-based MCP clients during development.
 
----
-
 ## The task we'll keep coming back to
 
 Two SQLModel entities, a one-to-many relationship, and an agent that needs to
@@ -106,8 +104,6 @@ class Post(SQLModel, table=True):
 Seed data: two users (Alice, Bob) and three posts. Everything that follows is
 about *how each paradigm lets the agent move across this little graph* — and how
 much code you write to make that movement possible.
-
----
 
 ## Path A: hand-writing FastMCP
 
@@ -246,8 +242,6 @@ None of this is a FastMCP bug. It's the shape of the contract — *tool =
 function* — meeting *data = graph*. The shape of the problem forces the shape of
 the pain.
 
----
-
 ## Path B1: NexusX Simple
 
 > Full code: [`nexusx_simple.py`](./nexusx_simple.py)
@@ -347,8 +341,6 @@ do. Simple mode doesn't break the linear schema-token curve; it relocates the
 cost from MCP tool descriptions to GraphQL SDL. The structural wins in B1 are
 field projection and nested resolution, not tool-count reduction. Path B2 is
 what actually breaks the curve.
-
----
 
 ## Path B2: NexusX UseCase — when you want business methods
 
@@ -451,8 +443,6 @@ opposite direction — start with FastAPI, get MCP for free. The structural
 difference is that B2 makes this work *because* of the `UseCaseService`
 abstraction, where FastMCP relies on you already having FastAPI routes.)
 
----
-
 ## Putting them side by side
 
 All three paths auto-generate `inputSchema` / `outputSchema` — that part isn't
@@ -480,8 +470,6 @@ inherit MCP tools for free. NexusX's `UseCaseService` bridges from the MCP
 side — start with service methods, mount to both. Either gets you one
 codebase, two faces. B2 still has a structural edge in *progressive
 disclosure* (above), but REST isn't where it shows up anymore.
-
----
 
 ## Why this works: the agent is another frontend client
 
@@ -522,8 +510,6 @@ tooling — persisted queries, operation whitelists, frontend-team-maintained
 resolvers — depends on that pre-known shape and doesn't transfer cleanly to
 agent traffic. The structural wins transfer; the operational tooling doesn't.
 
----
-
 ## The opinionated layer: constraints over freedom
 
 GraphQL's long-standing critique is that it specifies *syntax*, not *style*.
@@ -553,8 +539,6 @@ you design the schema yourself.
 
 NexusX isn't a better GraphQL framework. It's a more restrictive one — and the
 restriction is exactly how it solves *"can't find best practices."*
-
----
 
 ## What GraphQL-over-MCP costs you
 
@@ -632,8 +616,6 @@ bearer-token auth. If your needs go beyond *"expose the database to an agent"*
 — say, mixing tools with resources and prompts — FastMCP is the better
 foundation.
 
----
-
 ## Other GraphQL-based MCP implementations
 
 NexusX isn't the only realization of this paradigm. The core insight — *let
@@ -653,8 +635,6 @@ The paradigm is bigger than any one implementation. NexusX is the opinionated
 variant — SQLModel as single source of truth, two forced schema styles. Other
 implementations keep more freedom but lose the constraint that prevents schema
 drift.
-
----
 
 ## Five-minute checklist
 
@@ -704,8 +684,6 @@ Restart Claude Desktop and ask in chat: *"list all users with their most recent
 post."* The agent will discover the schema, construct the GraphQL query, and
 fetch the result in one round trip.
 
----
-
 ## Project layout
 
 ```
@@ -722,8 +700,6 @@ nexusx-vs-fastmcp/
 The three servers use independent sqlite files (`blog_fastmcp.db` /
 `blog_nexusx_simple.db` / `blog_nexusx_usecase.db`). They don't interfere and
 can run concurrently.
-
----
 
 ## Further reading
 
