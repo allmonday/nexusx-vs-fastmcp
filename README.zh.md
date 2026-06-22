@@ -322,7 +322,7 @@ mcp = create_use_case_graphql_mcp_server(
 
 这个时候 MCP 提供的是 4 个工具——结构性差异在这里才真正显出来。agent 从 `list_apps` 开始，这是一个极小的信封，只说"有什么 app"。如果在意，调 `describe_compose_schema(app)` 拿方法名（不含参数，仍然小）。看到有用的，再调 `describe_compose_method(app, svc, method)` 拿到这个方法的参数、返回类型、SDL 片段。最后才调 `compose_query(app, query)` 真正执行。
 
-这就是渐进披露被烤进协议层的样子。FastMCP 没有等价物——eager-load 客户端（现在主要是 Cursor）把所有工具描述一次性塞进上下文。新版 Claude Code 通过 Tool Search（按调用 lazy 拉 schema）绕开这个问题，但这是客户端的优化，不是协议保证。NexusX 让 agent 从"有什么"一层层钻到"这个方法吃什么参数"，只为它当前所在的那一层付 token。实体越多、业务方法越多，差距越大。FastMCP 项目里 30 多个工具是常态；NexusX 始终是 4 个。
+这就是渐进披露被固化在协议层的样子。FastMCP 没有等价物——eager-load 客户端（现在主要是 Cursor）把所有工具描述一次性塞进上下文。新版 Claude Code 通过 Tool Search（按调用 lazy 拉 schema）绕开这个问题，但这是客户端的优化，不是协议保证。NexusX 让 agent 从"有什么"一层层钻到"这个方法吃什么参数"，只为它当前所在的那一层付 token。实体越多、业务方法越多，差距越大。FastMCP 项目里 30 多个工具是常态；NexusX 始终是 4 个。
 
 而且，同一个 `UserService` 子类还能直接挂到 FastAPI：
 
