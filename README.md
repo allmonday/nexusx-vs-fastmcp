@@ -22,14 +22,16 @@ nested resolution solves N+1, strongly-typed schemas solve contract drift.
 A decade of accumulated practice — DataLoader, depth limiting, cost
 analysis, persisted queries — is already mature and ready to use.
 
-GraphQL-based MCP hands this infrastructure to the agent — but **without
-making you stand up your own GraphQL server, hand-write a pile of resolvers,
-or take on Apollo / Strawberry-grade operational burden**. The developer
-just declares database models (or business methods) as a GraphQL schema; the
-framework wraps that schema into MCP tools automatically. The agent inherits
-GraphQL's full query power; the developer gets the simplicity of *agent
-writes one query, fetches everything in one round trip* — not the burden of
-*yet another GraphQL service to maintain*.
+GraphQL-based MCP hands this infrastructure to the agent. The idea isn't
+new — people in the community floated it early — but it never really caught
+on, and one root reason is cost: standing up a separate GraphQL layer means
+running your own server, hand-writing a pile of resolvers, and taking on
+Apollo / Strawberry-grade operational burden. NexusX removes exactly that
+cost. The developer just declares database models (or business methods) as
+a GraphQL schema; the framework wraps that schema into MCP tools
+automatically. The agent inherits GraphQL's full query power; the developer
+gets the simplicity of *agent writes one query, fetches everything in one
+round trip* — not the burden of *yet another GraphQL service to maintain*.
 
 One caveat worth flagging. NexusX's GraphQL is not the full spec. Features
 designed for human developers — aliases, fragments — are stripped out. The

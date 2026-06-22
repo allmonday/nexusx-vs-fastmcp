@@ -12,7 +12,7 @@
 
 前端工程师在 2015 年前后撞过同一堵墙。那时大家都在 REST 加 BFF 的模式里挣扎，最后的答案就是 GraphQL。字段投影解决 over-fetch，嵌套解析解决 N+1，强类型 schema 解决契约漂移。十几年沉淀下来的工程实践——DataLoader、深度限制、cost analysis、persisted query——都是现成的。
 
-GraphQL-based MCP 就是把这套基础设施借给 agent 用。但是——这里很关键——你不用自己起一个 GraphQL server，不用手写一堆 resolver，也不用扛 Apollo 或者 Strawberry 那一套运维。开发者只要把数据库模型或者业务方法声明成 GraphQL schema，框架会自动把这个 schema 包成 MCP 工具交给 agent。agent 拿到的是 GraphQL 的全部查询能力；开发者拿到的是"一条查询、一次往返拿完"的简洁，而不是"再多维护一个 GraphQL 服务"的负担。
+GraphQL-based MCP 就是把这套基础设施借给 agent 用。这个想法其实不新——社区里早有人提过——但一直没真正流行起来，根因之一就是再单独维护一套 GraphQL 层太贵：得起 server、写 resolver、扛 Apollo 或 Strawberry 的运维。NexusX 改变的就是这一点。开发者只要把数据库模型或者业务方法声明成 GraphQL schema，框架会自动把这个 schema 包成 MCP 工具交给 agent。agent 拿到的是 GraphQL 的全部查询能力；开发者拿到的是“一条查询、一次往返拿完”的简洁，而不是“再多维护一个 GraphQL 服务”的负担。
 
 这里要补一句。NexusX 用的 GraphQL 不是完整规范。alias（字段别名）、fragment（查询片段）这些为人类开发者设计的特性，agent 写查询用不上，都被砍掉了。schema 因此更小、更省 token。换句话说，agent 拿到的是为它裁剪过的 GraphQL，不是前端团队那一整套。
 
