@@ -14,6 +14,8 @@
 
 GraphQL-based MCP 就是把这套基础设施借给 agent 用。这个想法其实不新——社区里早有人提过——但一直没真正流行起来，根因之一就是再单独维护一套 GraphQL 层太贵：得起 server、写 resolver、扛 Apollo 或 Strawberry 的运维。NexusX 改变的就是这一点。开发者只要把数据库模型或者业务方法声明成 GraphQL schema，框架会自动把这个 schema 包成 MCP 工具交给 agent。agent 拿到的是 GraphQL 的全部查询能力；开发者拿到的是“一条查询、一次往返拿完”的简洁，而不是“再多维护一个 GraphQL 服务”的负担。
 
+先退一步说 NexusX 本身是什么。它是个数据定义和组装框架：你定义 ER（实体和关系），它在此基础上渐进地、声明式地衍生出各种数据组合能力——GraphQL schema、REST 路由、MCP 工具，这些都是 ER 定义之上的衍生品，不是各自要单独维护的表面。前一段那一句"框架自动把 schema 包成 MCP 工具"之所以做得到，根因就在这里——MCP 这一层不是 NexusX 又写了一遍 schema，而是从 ER 出发自动长出来的。
+
 这里要补一句。NexusX 用的 GraphQL 不是完整规范。alias（字段别名）、fragment（查询片段）这些为人类开发者设计的特性，agent 写查询用不上，都被砍掉了。schema 因此更小、更省 token。换句话说，agent 拿到的是为它裁剪过的 GraphQL，不是前端团队那一整套。
 
 我想用一个最具体的任务来说明。假设 agent 要回答："列出 Alice 的 post 及其作者"。在 flat-tool MCP（FastMCP 推广的那种风格）里，这件事要三次工具调用，外加一个事先手写好的胶水工具。在 GraphQL-based MCP 里，这就是一条 agent 自己写出来的查询。

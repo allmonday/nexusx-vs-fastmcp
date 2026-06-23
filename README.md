@@ -33,6 +33,15 @@ automatically. The agent inherits GraphQL's full query power; the developer
 gets the simplicity of *agent writes one query, fetches everything in one
 round trip* — not the burden of *yet another GraphQL service to maintain*.
 
+Step back for a second on what NexusX actually is. It's a data definition
+and composition framework: you define the ER (entities and relationships),
+and on top of that it progressively, declaratively derives various
+data-composition capabilities — GraphQL schema, REST routes, MCP tools are
+all derivatives of the ER definition, not separate surfaces to maintain.
+That's why the previous paragraph's claim — *the framework auto-wraps the
+schema into MCP tools* — is achievable at all: the MCP layer doesn't
+re-declare the schema, it grows out of the ER definition automatically.
+
 One caveat worth flagging. NexusX's GraphQL is not the full spec. Features
 designed for human developers — aliases, fragments — are stripped out. The
 agent never writes them, and dropping them keeps the schema smaller and the
