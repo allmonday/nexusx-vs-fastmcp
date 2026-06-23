@@ -160,7 +160,7 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
 
 两个实体，七个工具。痛点就是从这里开始的，而且来得很快。
 
-第一，工具墙早早就出现了。每个实体 3 个工具是地板价。等你有了 10 个实体，你就在 ship 30 多个工具描述。Eager-load 的客户端——现在主要就是 Cursor——启动时把它们全读进上下文，不管这次任务用不用得上。新版 Claude Code 和新版 Claude Desktop 通过官方的 Tool Search 绕开了大部分问题：只有工具的 name 进上下文，schema 按调用拉取。但 MCP 协议层本身没有渐进披露的内建机制，只能靠客户端自觉。即便这样，Claude Code 和 Codex 都还有不跟随 `tools/list` 分页的 bug 没修。每个工具描述还比想象中更冗长，因为 schema 自动化会把所有 `Field(description=...)` 和嵌套类型都拉进来。token 成本是涨的，不是降的。
+第一，工具墙早早就出现了。每个实体 3 个工具是下限。等你有了 10 个实体，你就在 ship 30 多个工具描述。Eager-load 的客户端——现在主要就是 Cursor——启动时把它们全读进上下文，不管这次任务用不用得上。新版 Claude Code 和新版 Claude Desktop 通过官方的 Tool Search 绕开了大部分问题：只有工具的 name 进上下文，schema 按调用拉取。但 MCP 协议层本身没有渐进披露的内建机制，只能靠客户端自觉。即便这样，Claude Code 和 Codex 都还有不跟随 `tools/list` 分页的 bug 没修。每个工具描述还比想象中更冗长，因为 schema 自动化会把所有 `Field(description=...)` 和嵌套类型都拉进来。token 成本是涨的，不是降的。
 
 第二，嵌套数据要单独设计工具。"带 author 的 post 列表"这个需求，必须手写一个 `list_posts_with_author`，加一个 `PostWithAuthor` 的 pydantic 模型，再加一个显式的 `selectinload`。再多一层关系，比如 `posts { author { comments } }`，就再加一个工具、一个模型。agent 可能用到的每一种查询形状，都得事先设想好、预先写好。
 
@@ -170,7 +170,7 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
 
 最后说一下 REST 共存这一项。FastMCP 3.0 加了 `FastMCP.from_fastapi(app)`，能把现有 FastAPI 路由自动提升成 MCP 工具；反向也能把 MCP server mount 到 FastAPI ASGI app 里。如果你从 FastAPI 起步，REST 加 MCP 共存基本就解决了。这里有一个结构性 caveat：路径 A 这种模式——直接写 `@mcp.tool` 函数、底下没有 FastAPI app——拿不到这座桥，得先重构成"FastAPI 在先，再暴露 MCP"才能继承。NexusX 的 `UseCaseService`（路径 B2）从另一头解决：业务方法写一遍，同时挂到 MCP 和 FastAPI。
 
-这些都不是 FastMCP 的 bug。是"工具 = 函数"这个契约形状，撞上了"数据 = 图"这个问题。问题长什么样，痛就长什么样。
+这些都不是 FastMCP 的 bug。是"工具 = 函数"这个契约形状，撞上了"数据 = 图"这个问题。问题是结构性的，痛也是结构性的。
 
 ## 路径 B1：NexusX Simple
 
@@ -224,7 +224,7 @@ mcp = create_simple_mcp_server(
 )
 ```
 
-业务代码量跟路径 A 差不多——你本来就得写"怎么查 user、怎么创建 post"。NexusX 没有魔法消除这些。
+业务代码量跟路径 A 差不多——你本来就得写"怎么查 user、怎么创建 post"。NexusX 也没省掉这些。
 
 差异在最后一行之前的所有事情。没有 N 个 `@mcp.tool` 装饰器；没有每个实体一份 pydantic I/O 模型（SDL 从 SQLModel 元数据自动生成）；没有 `list_posts_with_author`（agent 直接要这个形状就行）；没有 `selectinload`（DataLoader 自动批量）。
 
@@ -260,7 +260,7 @@ agent 现在看到的是 3 个工具，不是 7 个：
 
 > 完整代码见 [`nexusx_usecase.py`](./nexusx_usecase.py)
 
-裸 CRUD 不总是你想暴露的东西。有时候正确的形状是派生视图，比如"列出 user 及其 post 数量"。它跟一行不是 1:1 映射。这就是 UseCase 模式挣到饭吃的地方。
+裸 CRUD 不总是你想暴露的东西。有时候正确的形状是派生视图，比如"列出 user 和 posts，并提供 post 数量"。它跟一行不是 1:1 映射。这就是 UseCase 模式派上用处的地方。
 
 ```python
 from nexusx import (
@@ -331,7 +331,7 @@ mcp = create_use_case_graphql_mcp_server(
 
 这个时候 MCP 提供的是 4 个工具——结构性差异在这里才真正显出来。agent 从 `list_apps` 开始，这是一个极小的信封，只说"有什么 app"。如果在意，调 `describe_compose_schema(app)` 拿方法名（不含参数，仍然小）。看到有用的，再调 `describe_compose_method(app, svc, method)` 拿到这个方法的参数、返回类型、SDL 片段。最后才调 `compose_query(app, query)` 真正执行。
 
-这就是渐进披露被固化在协议层的样子。FastMCP 没有等价物——eager-load 客户端（现在主要是 Cursor）把所有工具描述一次性塞进上下文。新版 Claude Code 通过 Tool Search（按调用 lazy 拉 schema）绕开这个问题，但这是客户端的优化，不是协议保证。NexusX 让 agent 从"有什么"一层层钻到"这个方法吃什么参数"，只为它当前所在的那一层付 token。实体越多、业务方法越多，差距越大。FastMCP 项目里 30 多个工具是常态；NexusX 始终是 4 个。
+这就是渐进披露被固化在协议层的样子。FastMCP 没有等价物——eager-load 客户端（现在主要是 Cursor）把所有工具描述一次性塞进上下文。新版 Claude Code 通过 Tool Search（按调用 lazy 拉 schema）绕开这个问题，但这是客户端的优化，不是协议保证。NexusX 让 agent 从"有什么"一层层钻到"这个方法要哪些参数"，只为它当前所在的那一层付 token。实体越多、业务方法越多，差距越大。FastMCP 项目里 30 多个工具是常态；NexusX 始终是 4 个。
 
 而且，同一个 `UserService` 子类还能直接挂到 FastAPI：
 
@@ -356,7 +356,7 @@ router = create_use_case_router(
 
 组合查询在路径 A 里要么多次往返、要么预先写胶水工具。在 B1 和 B2 里是原生 GraphQL——一次协议往返，底层 SQL 次数相当。
 
-REST 共存这一项上，差距已经抹平。FastMCP 3.0 的 `FastMCP.from_fastapi(app)` 从 REST 这一侧搭桥，先有 FastAPI，免费拿到 MCP 工具。NexusX 的 `UseCaseService` 从 MCP 这一侧搭桥，先有 service 方法，同时挂两边。两边都能做到一份代码、两面交付。B2 真正的结构性优势在渐进披露（上面那条），REST 不再是它显身手的地方。
+REST 共存这一项上，差距已经抹平。FastMCP 3.0 的 `FastMCP.from_fastapi(app)` 从 REST 这一侧搭桥，先有 FastAPI，免费拿到 MCP 工具。NexusX 的 `UseCaseService` 从 MCP 这一侧搭桥，先有 service 方法，同时挂两边。两边都能做到一份代码、两面交付。B2 真正的结构性优势在渐进披露（上面那条），REST 不再是它发挥作用的地方。
 
 ## 为什么这样做是有效的
 
@@ -368,13 +368,13 @@ agent 现在撞上类似的墙，只是换了个名字，叫"tools/list 的 toke
 
 NexusX 不是"发明一个新 MCP 框架"。它把 SQLModel 实体当作 GraphQL schema 的单一真相源，让 agent 通过 GraphQL-over-MCP 拿到所有能力。让那一行 `create_simple_mcp_server` 真正起作用的，是这套继承关系——agent 拿到的不是"为 AI 设计的新协议"，而是"为前端设计的协议"。
 
-这个抽象的价值有三层。第一，agent 的能力上限被抬高了——组合查询、字段投影、嵌套关系一次往返，这些是 GraphQL 的红利，agent 现在白捡。第二，存量 SQLModel 项目几乎免费接入——本来就有 entity，加几个 `@query` 装饰器就有 MCP。第三，`UseCaseService` 让 REST 跟 MCP 一起免费——同一份代码挂两面。
+这个抽象的价值有三层。第一，agent 的能力上限被抬高了——组合查询、字段投影、嵌套关系一次往返，这些是 GraphQL 的红利，agent 直接拿到。第二，存量 SQLModel 项目几乎免费接入——本来就有 entity，加几个 `@query` 装饰器就有 MCP。第三，`UseCaseService` 让 REST 跟 MCP 一起免费——同一份代码挂两面。
 
 前提是：数据有结构、关系可遍历。如果 agent 要做的不是查数据库，而是发邮件、改图片、调外部 API，那 GraphQL 的抽象反而是阻碍，FastMCP 那种“工具 = 函数”的模型更合适。
 
 ## 少即是多：用约束换可预测
 
-GraphQL 长期被诟病的一点是：它规定了语法，没规定风格。社区里推 schema 风格的声音从来不统一——Apollo 推 schema-first 加 business-aligned types，Facebook 早期按 UI 组件组织，绝大多数团队最后却把 ORM 模型直接映射成 GraphQL type。三种风格混用，schema 就开始烂。"找不到最佳实践"不是没努力，是协议没给约束。
+GraphQL 长期被诟病的一点是：它规定了语法，没规定风格。社区里推 schema 风格的声音从来不统一——Apollo 推 schema-first 加 business-aligned types，Facebook 早期按 UI 组件组织，绝大多数团队最后却把 ORM 模型直接映射成 GraphQL type。三种风格混用，schema 就开始失控。"找不到最佳实践"不是没努力，是协议没给约束。
 
 NexusX 把选择拿掉了。两条 API 路径泾渭分明。
 

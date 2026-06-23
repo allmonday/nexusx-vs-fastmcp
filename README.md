@@ -200,7 +200,7 @@ async def list_posts_with_author(limit: int = 20) -> list[PostWithAuthor]:
 Two entities, seven tools. That's where the friction starts to show — and it
 shows fast.
 
-**The tool wall shows up early.** Three tools per entity is the floor. By the
+**The tool wall shows up early.** Three tools per entity is the minimum. By the
 time you have ten entities you're shipping thirty-plus tool descriptions.
 Eager-load clients — Cursor is the main example today — read all of them into
 context on startup, whether or not this particular task needs them. Recent
@@ -241,8 +241,7 @@ from the other direction: write the business method once, mount it to both
 MCP and FastAPI.
 
 None of this is a FastMCP bug. It's the shape of the contract — *tool =
-function* — meeting *data = graph*. The shape of the problem forces the shape of
-the pain.
+function* — meeting *data = graph*. The problem is structural; so is the pain.
 
 ## Path B1: NexusX Simple
 
@@ -299,7 +298,7 @@ mcp = create_simple_mcp_server(
 ```
 
 The business code is roughly the same as Path A — you'd be writing *"how to
-query users, how to create posts"* anyway. NexusX doesn't magically remove that.
+query users, how to create posts"* anyway. NexusX doesn't remove that either.
 
 What's different is everything before the last line. No `@mcp.tool` decorators
 multiplied by N. No pydantic I/O models per entity — the SDL is generated from
@@ -349,8 +348,8 @@ what actually breaks the curve.
 > Full code: [`nexusx_usecase.py`](./nexusx_usecase.py)
 
 Raw CRUD isn't always what you want to expose. Sometimes the right shape is a
-derived view — *"list users with their post counts"* — that doesn't map 1:1 to
-a row. That's where the UseCase pattern earns its keep.
+derived view — *"list users with their posts and a post count"* — that doesn't map 1:1 to
+a row. That's where the UseCase pattern pays off.
 
 ```python
 from nexusx import (
@@ -480,7 +479,7 @@ REST co-existence is where the field has leveled. FastMCP 3.0's
 inherit MCP tools for free. NexusX's `UseCaseService` bridges from the MCP
 side — start with service methods, mount to both. Either gets you one
 codebase, two faces. B2 still has a structural edge in *progressive
-disclosure* (above), but REST isn't where it shows up anymore.
+disclosure* (above), but REST isn't the differentiator anymore.
 
 ## Why this works: the agent is another frontend client
 
@@ -521,7 +520,7 @@ GraphQL's long-standing critique is that it specifies *syntax*, not *style*.
 The community has never agreed on schema style: Apollo pushes schema-first +
 business-aligned types, early Facebook organized schemas around UI components,
 most teams end up mapping ORM models directly to GraphQL types. Three styles in
-the same schema and it starts to rot. *"Can't find the best practice"* isn't
+the same schema and quality starts to drift. *"Can't find the best practice"* isn't
 lack of effort — it's the protocol giving no constraints.
 
 NexusX removes the choice. Two API paths, sharply separated.
