@@ -426,6 +426,13 @@ names (no params yet, still small). When something looks useful, it calls
 parameters, return type, and SDL fragment. Only then does it call
 `compose_query(app, query)` to actually run something.
 
+One counterintuitive detail here. MCP sits on the outside, so you'd expect it
+to translate GraphQL into MCP tool calls. It doesn't. `compose_query` takes a
+GraphQL query string verbatim; the server parses it with graphql-core into an
+AST and walks the selections, calling the corresponding service methods. The
+agent's GraphQL isn't translated — it *is* the payload, traversing the MCP
+channel unchanged.
+
 This is what *progressive disclosure* looks like baked into the protocol itself.
 FastMCP offers no equivalent — eager-load clients (Cursor today) put every tool
 description into context at startup. Recent Claude Code builds sidestep this
